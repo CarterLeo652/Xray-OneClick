@@ -19,7 +19,7 @@ LEGACY_SHORTCUT_PATH="/usr/local/bin/sb"
 INSTALLER_DIR="/usr/local/share/ike"
 INSTALLER_PATH="${INSTALLER_DIR}/install.sh"
 SCRIPT_NAME="Xray-OneClick"
-SCRIPT_VERSION="0.2.0-beta.1"
+SCRIPT_VERSION="0.2.0-beta.2"
 REPO_URL="https://github.com/ike-sh/Xray-OneClick"
 RAW_SCRIPT_URL="https://raw.githubusercontent.com/ike-sh/Xray-OneClick/main/install.sh"
 XRAY_RELEASE_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
@@ -778,11 +778,16 @@ replace_xray_binary() {
 }
 
 detect_xray_version() {
+    local version_output version
+
     if [[ ! -x "$BIN_PATH" ]]; then
         printf '%s' "未安装"
         return 1
     fi
-    "$BIN_PATH" version 2>/dev/null | head -n 1 | sed -E 's/^Xray[[:space:]]+//; s/[[:space:]].*$//' || return 1
+    version_output="$("$BIN_PATH" version 2>/dev/null)" || return 1
+    version="$(printf '%s\n' "$version_output" | sed -nE 's/^Xray[[:space:]]+([0-9][^[:space:]]*).*/\1/p; s/^v?([0-9]+(\.[0-9]+)+).*/\1/p' | head -n 1)"
+    [[ -n "$version" ]] || return 1
+    printf '%s' "$version"
 }
 
 detect_xray_feature_support() {
@@ -974,7 +979,7 @@ upgrade_xray_core() {
         rm -rf "$tmpdir"
         return 1
     fi
-    "$BIN_PATH" version 2>/dev/null | head -n 3 || true
+    info "[核心] Xray 已升级: $(detect_xray_version 2>/dev/null || printf '%s' '版本未知')"
     [[ "$restart" == "true" ]] && restart_xray_service
     rm -rf "$tmpdir"
 }
@@ -1029,7 +1034,7 @@ install_or_update_xray() {
     init_state || return 1
 
     if [[ -x "$BIN_PATH" && "$force" != "true" ]]; then
-        info "[核心] Xray 已安装: $(detect_xray_version 2>/dev/null || printf '%s' unknown)"
+        info "[核心] Xray 已安装: $(detect_xray_version 2>/dev/null || printf '%s' '版本未知')"
         create_service || return 1
         return 0
     fi
@@ -1710,18 +1715,106 @@ generate_reality_short_ids() {
     REALITY_SHORT_IDS_JSON="$(printf '%s\n' "${REALITY_SHORT_IDS[@]}" | jq -R . | jq -s -c .)" || return 1
 }
 
+normalize_x25519_key_name() {
+    local key="$1"
+
+    key="${key//$'\r'/}"
+    key="${key//[[:space:]]/}"
+    key="${key//_/}"
+    key="${key//-/}"
+    printf '%s' "${key,,}"
+}
+
+trim_x25519_value() {
+    local value="$1"
+
+    value="${value//$'\r'/}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s' "$value"
+}
+
+mask_x25519_value() {
+    local value="$1"
+    local len="${#value}"
+
+    if [[ -z "$value" ]]; then
+        printf '%s' "(空)"
+    elif ((len <= 8)); then
+        printf '%s' "****"
+    else
+        printf '%s...%s' "${value:0:4}" "${value: -4}"
+    fi
+}
+
+print_masked_x25519_output() {
+    local output="$1"
+    local line key value
+
+    while IFS= read -r line; do
+        line="${line//$'\r'/}"
+        [[ -n "$line" ]] || continue
+        if [[ "$line" == *:* ]]; then
+            key="$(trim_x25519_value "${line%%:*}")"
+            value="$(trim_x25519_value "${line#*:}")"
+            if [[ -n "$value" ]]; then
+                printf '  %s: %s\n' "$key" "$(mask_x25519_value "$value")"
+            else
+                printf '  %s:\n' "$key"
+            fi
+        else
+            printf '  %s\n' "$line"
+        fi
+    done <<<"$output"
+}
+
+parse_xray_x25519_output() {
+    local output="$1"
+    local line raw_key key value private="" public="" hash32=""
+
+    while IFS= read -r line; do
+        line="${line//$'\r'/}"
+        [[ "$line" == *:* ]] || continue
+        raw_key="${line%%:*}"
+        value="$(trim_x25519_value "${line#*:}")"
+        key="$(normalize_x25519_key_name "$raw_key")"
+        [[ -n "$value" ]] || continue
+        case "$key" in
+            privatekey)
+                private="$value"
+                ;;
+            publickey | password)
+                public="$value"
+                ;;
+            hash32)
+                hash32="$value"
+                ;;
+        esac
+    done <<<"$output"
+
+    [[ -n "$private" && -n "$public" ]] || return 1
+    REALITY_PRIVATE_KEY="$private"
+    REALITY_PUBLIC_KEY="$public"
+    REALITY_X25519_HASH32="$hash32"
+}
+
 generate_reality_keys() {
-    local output
+    local output status
 
-    output="$("$BIN_PATH" x25519 2>/dev/null)" || {
-        err "[Reality] xray x25519 执行失败，请确认 Xray 版本支持 REALITY。"
+    output="$("$BIN_PATH" x25519 2>&1)"
+    status=$?
+    if ((status != 0)); then
+        err "[Reality] xray x25519 执行失败，退出码: ${status}"
+        err "[Reality] 脱敏输出:"
+        print_masked_x25519_output "$output" >&2
+        err "[Reality] 请确认 Xray 版本支持 REALITY。"
         return 1
-    }
+    fi
 
-    REALITY_PRIVATE_KEY="$(printf '%s\n' "$output" | sed -n 's/.*[Pp]rivate key: *//p' | head -n 1 | tr -d '\r')"
-    REALITY_PUBLIC_KEY="$(printf '%s\n' "$output" | sed -n 's/.*[Pp]ublic key: *//p' | head -n 1 | tr -d '\r')"
-    if [[ -z "$REALITY_PRIVATE_KEY" || -z "$REALITY_PUBLIC_KEY" ]]; then
-        err "[Reality] 无法解析 xray x25519 输出。"
+    if ! parse_xray_x25519_output "$output"; then
+        err "[Reality] 当前 Xray x25519 输出格式未被识别。"
+        err "[Reality] 脱敏输出:"
+        print_masked_x25519_output "$output" >&2
         return 1
     fi
 }
@@ -6032,17 +6125,17 @@ render_menu() {
     echo -e "${GREEN}2.${PLAIN} 安装 Shadowsocks 2022"
     echo -e "${GREEN}3.${PLAIN} 安装 IPv6 + Shadowsocks 2022"
     echo -e "${GREEN}4.${PLAIN} 安装 VLESS Encryption"
-    echo -e "${GREEN}5.${PLAIN} 安装 SOCKS5 代理"
-    echo -e "${GREEN}6.${PLAIN} 查看当前配置链接"
-    echo -e "${GREEN}7.${PLAIN} 设置链接显示模式 (IPv4/IPv6/双栈)"
-    echo -e "${GREEN}8.${PLAIN} 重置密钥/密码（端口不变）"
-    echo -e "${RED}9.${PLAIN} 卸载/清理"
-    echo -e "${GREEN}10.${PLAIN} 开启/关闭中国大陆直连屏蔽"
-    echo -e "${GREEN}11.${PLAIN} 开启/关闭增强安全屏蔽"
-    echo -e "${GREEN}12.${PLAIN} 导出当前配置备份"
-    echo -e "${GREEN}13.${PLAIN} Tunnel 中转管理"
-    echo -e "${GREEN}14.${PLAIN} 安装 VLESS TCP REALITY"
-    echo -e "${GREEN}15.${PLAIN} 安装 VLESS Encryption + XHTTP + FinalMask"
+    echo -e "${GREEN}5.${PLAIN} 安装 VLESS TCP REALITY"
+    echo -e "${GREEN}6.${PLAIN} 安装 VLESS Encryption + XHTTP + FinalMask"
+    echo -e "${GREEN}7.${PLAIN} 安装 SOCKS5 代理"
+    echo -e "${GREEN}8.${PLAIN} 查看当前配置链接"
+    echo -e "${GREEN}9.${PLAIN} 设置链接显示模式 (IPv4/IPv6/双栈)"
+    echo -e "${GREEN}10.${PLAIN} 重置密钥/密码（端口不变）"
+    echo -e "${RED}11.${PLAIN} 卸载/清理"
+    echo -e "${GREEN}12.${PLAIN} 开启/关闭中国大陆直连屏蔽"
+    echo -e "${GREEN}13.${PLAIN} 开启/关闭增强安全屏蔽"
+    echo -e "${GREEN}14.${PLAIN} 导出当前配置备份"
+    echo -e "${GREEN}15.${PLAIN} Tunnel 中转管理"
     echo -e "${GREEN}16.${PLAIN} 退出"
     echo -e "----------------------------------------------"
 }
@@ -6083,45 +6176,45 @@ show_menu() {
                 fi
                 ;;
             5)
-                if ! { prepare_system && install_socks5; }; then
-                    err "[失败] SOCKS5 安装未完成，请查看上方错误信息。"
-                fi
-                ;;
-            6)
-                view_config || err "[失败] 查看当前配置链接失败，请查看上方错误信息。"
-                ;;
-            7)
-                set_link_view_mode || err "[失败] 设置链接显示模式失败，请查看上方错误信息。"
-                ;;
-            8)
-                if ! { prepare_system && reset_secrets; }; then
-                    err "[失败] 重置密钥/密码未完成，请查看上方错误信息。"
-                fi
-                ;;
-            9)
-                uninstall || err "[失败] 卸载/清理未完成，请查看上方错误信息。"
-                ;;
-            10)
-                configure_china_direct_block || err "[失败] 中国大陆直连屏蔽设置未完成，请查看上方错误信息。"
-                ;;
-            11)
-                configure_enhanced_safety_block || err "[失败] 增强安全屏蔽设置未完成，请查看上方错误信息。"
-                ;;
-            12)
-                export_current_config_backup || err "[失败] 导出当前配置备份未完成，请查看上方错误信息。"
-                ;;
-            13)
-                configure_forward_menu || err "[失败] Tunnel 中转管理未完成，请查看上方错误信息。"
-                ;;
-            14)
                 if ! { prepare_system && configure_reality "interactive" && install_reality; }; then
                     err "[失败] VLESS TCP REALITY 安装未完成，请查看上方错误信息。"
                 fi
                 ;;
-            15)
+            6)
                 if ! { prepare_system && configure_vless_xhttp_finalmask "interactive" && install_vless_xhttp_finalmask; }; then
                     err "[失败] VLESS Encryption + XHTTP + FinalMask 安装未完成，请查看上方错误信息。"
                 fi
+                ;;
+            7)
+                if ! { prepare_system && install_socks5; }; then
+                    err "[失败] SOCKS5 安装未完成，请查看上方错误信息。"
+                fi
+                ;;
+            8)
+                view_config || err "[失败] 查看当前配置链接失败，请查看上方错误信息。"
+                ;;
+            9)
+                set_link_view_mode || err "[失败] 设置链接显示模式失败，请查看上方错误信息。"
+                ;;
+            10)
+                if ! { prepare_system && reset_secrets; }; then
+                    err "[失败] 重置密钥/密码未完成，请查看上方错误信息。"
+                fi
+                ;;
+            11)
+                uninstall || err "[失败] 卸载/清理未完成，请查看上方错误信息。"
+                ;;
+            12)
+                configure_china_direct_block || err "[失败] 中国大陆直连屏蔽设置未完成，请查看上方错误信息。"
+                ;;
+            13)
+                configure_enhanced_safety_block || err "[失败] 增强安全屏蔽设置未完成，请查看上方错误信息。"
+                ;;
+            14)
+                export_current_config_backup || err "[失败] 导出当前配置备份未完成，请查看上方错误信息。"
+                ;;
+            15)
+                configure_forward_menu || err "[失败] Tunnel 中转管理未完成，请查看上方错误信息。"
                 ;;
             16) exit 0 ;;
             *) err "错误选项。" ;;
@@ -6581,6 +6674,41 @@ doctor_reality_config() {
     command -v openssl >/dev/null 2>&1 && diag_ok "openssl 存在" || diag_warn "openssl 不存在，SNI TLS 探测不可用"
 }
 
+doctor_xray_x25519() {
+    local output status old_private old_public old_hash
+
+    echo -e "\n${YELLOW}Xray x25519 诊断${PLAIN}"
+    echo "----------------------------------------"
+    if [[ ! -x "$BIN_PATH" ]]; then
+        diag_warn "xray 二进制不存在，跳过 x25519 检查: $BIN_PATH"
+        return 0
+    fi
+
+    output="$("$BIN_PATH" x25519 2>&1)"
+    status=$?
+    if ((status != 0)); then
+        diag_fail "xray x25519 执行失败，退出码: ${status}"
+        print_masked_x25519_output "$output"
+        return 0
+    fi
+
+    old_private="${REALITY_PRIVATE_KEY:-}"
+    old_public="${REALITY_PUBLIC_KEY:-}"
+    old_hash="${REALITY_X25519_HASH32:-}"
+    if parse_xray_x25519_output "$output"; then
+        diag_ok "xray x25519 输出可解析"
+        diag_info "PrivateKey: $(mask_x25519_value "$REALITY_PRIVATE_KEY")"
+        diag_info "PublicKey/Password: $(mask_x25519_value "$REALITY_PUBLIC_KEY")"
+        [[ -n "${REALITY_X25519_HASH32:-}" ]] && diag_info "Hash32: $(mask_x25519_value "$REALITY_X25519_HASH32")"
+    else
+        diag_fail "当前 Xray x25519 输出格式未被识别"
+        print_masked_x25519_output "$output"
+    fi
+    REALITY_PRIVATE_KEY="$old_private"
+    REALITY_PUBLIC_KEY="$old_public"
+    REALITY_X25519_HASH32="$old_hash"
+}
+
 doctor_reality_routing() {
     local sni="$1"
 
@@ -6663,6 +6791,7 @@ doctor_reality() {
     echo -e "\n${YELLOW}Reality 诊断${PLAIN}"
     echo "----------------------------------------"
     doctor_reality_config
+    doctor_xray_x25519
     if ! inbound_exists "$REALITY_TAG"; then
         diag_info "Reality 未安装，跳过 Reality 专项检查"
         return 0
@@ -6765,6 +6894,7 @@ doctor_proxy() {
     fi
     default_safety_block_enabled && diag_ok "默认安全屏蔽规则存在" || diag_warn "默认安全屏蔽规则未完整启用"
     detect_xray_feature_support
+    doctor_xray_x25519
     if view_config dual quick >/dev/null 2>&1; then
         diag_ok "ike view 可以输出"
     else
@@ -6777,6 +6907,7 @@ run_doctor_command() {
 
     case "$target" in
         preflight) preflight_system ;;
+        reality-key) doctor_xray_x25519 ;;
         reality) doctor_reality ;;
         xhttp) doctor_xhttp ;;
         proxy) doctor_proxy ;;
@@ -6789,7 +6920,7 @@ run_doctor_command() {
             ;;
         *)
             err "[失败] 未知 doctor 参数: $target"
-            echo "用法: ike doctor preflight|reality|xhttp|proxy|all"
+            echo "用法: ike doctor preflight|reality-key|reality|xhttp|proxy|all"
             return 1
             ;;
     esac
@@ -7586,6 +7717,7 @@ Xray-OneClick 命令帮助
   ike doctor all
   ike doctor preflight
   ike doctor proxy
+  ike doctor reality-key
   ike doctor reality
   ike doctor xhttp
   ike smoke reality
@@ -7682,7 +7814,7 @@ show_version() {
     echo "Repository: ${REPO_URL}"
     if [[ -x "$BIN_PATH" ]]; then
         echo
-        "$BIN_PATH" version 2>/dev/null | head -n 5 || echo "Xray: 版本信息读取失败"
+        echo "Xray: $(detect_xray_version 2>/dev/null || printf '%s' '版本信息读取失败')"
     else
         echo "Xray: 未安装 (${BIN_PATH})"
     fi

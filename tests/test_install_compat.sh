@@ -299,7 +299,20 @@ JSON
     assert_contains "$output" "ike xray" "help missing xray"
     assert_contains "$output" "ike migrate" "help missing migrate"
     output="$(show_version)"
-    assert_contains "$output" "0.2.0-beta.1" "version output mismatch"
+    assert_contains "$output" "0.2.0-beta.2" "version output mismatch"
+    cat >"$BIN_PATH" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "version" ]]; then
+  echo "Xray 26.3.27"
+  echo "unknown"
+  exit 0
+fi
+exit 0
+EOF
+    chmod +x "$BIN_PATH"
+    output="$(show_version)"
+    assert_contains "$output" "Xray: 26.3.27" "version parser did not keep clean version"
+    assert_not_contains "$output" "unknown" "version output leaked bare unknown"
     if main does-not-exist >/dev/null 2>"${TEST_TMP}/unknown.err"; then
         fail "unknown command should fail"
     fi

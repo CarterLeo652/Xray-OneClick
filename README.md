@@ -5,15 +5,28 @@
 ![Core](https://img.shields.io/badge/Core-Xray-blue)
 ![License](https://img.shields.io/badge/License-GPLv3-orange)
 
-> `0.2.0-beta.1` 是实机测试候选版，仍不标记为稳定版。beta.1 表示代码结构、安装链路、诊断链路和回滚策略已基本收敛；Reality 相对稳定，XHTTP + FinalMask 仍是实验功能，仍需真实 VPS 和客户端测试，不承诺所有客户端都兼容 FinalMask / `fm` 分享链接。本项目仅供学习和合法网络测试使用，请遵守所在地法律法规和服务商条款。
+> `0.2.0-beta.2` 是实机反馈修复版，仍不标记为稳定版。本版修复新版 Xray `x25519` 输出解析，并调整主菜单顺序，让 Reality / XHTTP 紧挨 VLESS Encryption。Reality 相对稳定，XHTTP + FinalMask 仍是实验功能，仍需真实 VPS 和客户端测试，不承诺所有客户端都兼容 FinalMask / `fm` 分享链接。本项目仅供学习和合法网络测试使用，请遵守所在地法律法规和服务商条款。
 
 ## 版本状态
 
-- 当前版本：`0.2.0-beta.1`
-- 定位：实机测试候选版，不是 stable。
+- 当前版本：`0.2.0-beta.2`
+- 定位：实机反馈修复版，不是 stable。
 - Reality：默认 TCP + REALITY + Vision flow，适合进入 VPS 实机烟测。
 - XHTTP + FinalMask：实验能力，客户端兼容性取决于 Xray-core / 客户端内核版本。
 - 升级建议：从 alpha.1 / alpha.2 / alpha.3 / alpha.4 升级后先运行 `ike doctor all`，再运行 `ike migrate --dry-run`。
+- beta.2 修复点：Xray 26.3.x 实机测试中，`xray x25519` 可能输出 `PrivateKey` / `Password` / `Hash32` 新格式；脚本现在会把 `PrivateKey` 用作服务端 `privateKey`，把 `Password` 映射为客户端 `publicKey`，忽略 `Hash32`。
+
+## beta.2 实机反馈记录
+
+已确认：
+
+- Xray latest `26.3.27` 可安装。
+- SS2022 可安装。
+- VLESS Encryption 可安装。
+- SOCKS5 可安装。
+- XHTTP + FinalMask 可写入配置并成功重启 systemd。
+
+beta.1 的 Reality 失败点是新版 `xray x25519` 输出解析，beta.2 已修复。Reality 仍需用户复测客户端连通性；XHTTP + FinalMask 虽然服务端写入成功，客户端兼容性仍需继续测试。
 
 ## 适合谁使用
 
@@ -92,6 +105,7 @@ ike preflight
 ike doctor all
 ike doctor preflight
 ike doctor proxy
+ike doctor reality-key
 ike doctor reality
 ike doctor xhttp
 ike smoke reality
@@ -191,17 +205,17 @@ ike tunnel del
 2. 安装 Shadowsocks 2022
 3. 安装 IPv6 + Shadowsocks 2022
 4. 安装 VLESS Encryption
-5. 安装 SOCKS5 代理
-6. 查看当前配置链接
-7. 设置链接显示模式
-8. 重置密钥/密码
-9. 卸载/清理
-10. 开启/关闭中国大陆直连屏蔽
-11. 开启/关闭增强安全屏蔽
-12. 导出当前配置备份
-13. Tunnel 中转管理
-14. 安装 VLESS TCP REALITY
-15. 安装 VLESS Encryption + XHTTP + FinalMask
+5. 安装 VLESS TCP REALITY
+6. 安装 VLESS Encryption + XHTTP + FinalMask
+7. 安装 SOCKS5 代理
+8. 查看当前配置链接
+9. 设置链接显示模式 (IPv4/IPv6/双栈)
+10. 重置密钥/密码（端口不变）
+11. 卸载/清理
+12. 开启/关闭中国大陆直连屏蔽
+13. 开启/关闭增强安全屏蔽
+14. 导出当前配置备份
+15. Tunnel 中转管理
 16. 退出
 
 ## 本地开发与测试
@@ -390,6 +404,7 @@ ike service repair
 ```bash
 ike doctor preflight
 ike doctor proxy
+ike doctor reality-key
 ike doctor reality
 ike doctor xhttp
 ike doctor all
@@ -976,7 +991,7 @@ journalctl -u xray -n 80 --no-pager
 
 ## 卸载与清理
 
-执行 `ike` 后进入 `9) 卸载/清理` 子菜单，可删除单项协议配置、卸载全部 Xray 实现，或清理旧版 sing-box 残留。
+执行 `ike` 后进入 `11) 卸载/清理` 子菜单，可删除单项协议配置、卸载全部 Xray 实现，或清理旧版 sing-box 残留。
 
 旧 sing-box 清理只面向迁移前遗留内容，包括：
 
@@ -984,7 +999,7 @@ journalctl -u xray -n 80 --no-pager
 - `/usr/local/bin/sing-box`
 - `sing-box.service` 或 OpenRC 服务
 
-清理前脚本会再次询问确认。
+清理前脚本会再次询问确认。卸载全部 Xray 后如果当前 shell 仍缓存旧命令路径，可执行 `hash -r` 后再检查 `ike` 是否已移除。
 
 ## 免责声明
 
