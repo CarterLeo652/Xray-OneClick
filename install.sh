@@ -19,7 +19,7 @@ LEGACY_SHORTCUT_PATH="/usr/local/bin/sb"
 INSTALLER_DIR="/usr/local/share/ike"
 INSTALLER_PATH="${INSTALLER_DIR}/install.sh"
 SCRIPT_NAME="Xray-OneClick"
-SCRIPT_VERSION="0.2.0-beta.3"
+SCRIPT_VERSION="1.0.0"
 REPO_URL="https://github.com/ike-sh/Xray-OneClick"
 RAW_SCRIPT_URL="https://raw.githubusercontent.com/ike-sh/Xray-OneClick/main/install.sh"
 XRAY_RELEASE_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
@@ -7739,7 +7739,6 @@ Xray-OneClick 命令帮助
   ike endpoint clear
   ike endpoint detect
   ike config path
-  ike config test
   ike config edit
   ike service status
   ike service install
@@ -7766,9 +7765,9 @@ Xray-OneClick 命令帮助
   ike reality remove
   ike xhttp install
   ike xhttp install --dry-run
-  ike xhttp install --port 30005 --path /api/test --finalmask on
-  ike xhttp install --port 30005 --path /api/test --finalmask off
-  ike xhttp install --port 30005 --path /api/test --finalmask on --dry-run
+  ike xhttp install --port 30005 --path /api/demo --finalmask on
+  ike xhttp install --port 30005 --path /api/demo --finalmask off
+  ike xhttp install --port 30005 --path /api/demo --finalmask on --dry-run
   ike xhttp show
   ike xhttp remove
   ike view reality
@@ -7782,7 +7781,6 @@ Xray-OneClick 命令帮助
   ike tunnel enable
   ike tunnel disable
   ike tunnel del
-  ike tunnel test
   ike tunnel doctor
   ike tunnel group list
   ike tunnel group doctor
@@ -7805,7 +7803,6 @@ Xray-OneClick 命令帮助
   ike forward enable
   ike forward disable
   ike forward del
-  ike forward test
   ike forward doctor
   ike forward template
   ike forward ports
