@@ -1,9 +1,19 @@
 # Xray-OneClick
 
-> 基于 **Xray-core** 的菜单式个人服务器安装脚本，支持 **Shadowsocks 2022**、**VLESS Encryption** 和可选 **SOCKS5**。
+> 基于 **Xray-core** 的菜单式个人服务器安装脚本，支持 **Shadowsocks 2022**、**VLESS Encryption**、**VLESS TCP REALITY**、**XHTTP + FinalMask** 和可选 **SOCKS5**。
 
 ![Core](https://img.shields.io/badge/Core-Xray-blue)
 ![License](https://img.shields.io/badge/License-GPLv3-orange)
+
+> `0.2.0-beta.1` 是实机测试候选版，仍不标记为稳定版。beta.1 表示代码结构、安装链路、诊断链路和回滚策略已基本收敛；Reality 相对稳定，XHTTP + FinalMask 仍是实验功能，仍需真实 VPS 和客户端测试，不承诺所有客户端都兼容 FinalMask / `fm` 分享链接。本项目仅供学习和合法网络测试使用，请遵守所在地法律法规和服务商条款。
+
+## 版本状态
+
+- 当前版本：`0.2.0-beta.1`
+- 定位：实机测试候选版，不是 stable。
+- Reality：默认 TCP + REALITY + Vision flow，适合进入 VPS 实机烟测。
+- XHTTP + FinalMask：实验能力，客户端兼容性取决于 Xray-core / 客户端内核版本。
+- 升级建议：从 alpha.1 / alpha.2 / alpha.3 / alpha.4 升级后先运行 `ike doctor all`，再运行 `ike migrate --dry-run`。
 
 ## 适合谁使用
 
@@ -13,9 +23,13 @@
 
 ## 功能概览
 
-- **默认核心为 Xray**：通过 GitHub Releases API 获取 `XTLS/Xray-core` 最新版本，并按服务器架构下载 Linux zip 包。
+- **默认核心为 Xray**：通过 GitHub Releases 获取 `XTLS/Xray-core`，支持 latest、指定版本和 `XRAY_GITHUB_MIRRORS` 镜像兜底。
 - **Shadowsocks 2022**：支持 `2022-blake3-aes-128-gcm`、`2022-blake3-aes-256-gcm`、`2022-blake3-chacha20-poly1305`。
 - **VLESS Encryption**：调用 `xray vlessenc` 生成服务端 `decryption` 和客户端 `encryption`，支持基础模式和高级模式。
+- **VLESS TCP REALITY**：支持随机或指定入口端口、随机或指定伪装域名，自动生成 UUID、X25519 密钥、Vision flow 和 8 个 shortId。
+- **VLESS Encryption + XHTTP + FinalMask**：复用现有 VLESS Encryption 生成逻辑，支持 XHTTP path 和实验性 FinalMask 模板，可关闭 FinalMask。
+- **安装兼容收敛**：提供 `ike preflight`、Xray 版本检测/升级、systemd service 修复、重复安装幂等、旧 state 迁移和安全卸载。
+- **诊断与烟测辅助**：提供 `ike doctor reality|xhttp|proxy|all`、`ike smoke reality|xhttp|all`、安装 `--dry-run` 和脱敏导出。
 - **可选 SOCKS5**：适合临时代理或内网测试。
 - **Tunnel 中转管理**：基于 Xray 官方 Tunnel（旧称 `dokodemo-door`）实现应用层 TCP/UDP 中转，支持 single、实验性 portMap、safe / relay、group 分组。
 - **Endpoint 管理**：可设置用户实际连接地址，适配 NAT、小鸡端口映射、DDNS 和多公网 IP 场景。
@@ -74,9 +88,24 @@ ike view
 ike view ipv4
 ike view ipv6
 ike view doctor
+ike preflight
+ike doctor all
+ike doctor preflight
+ike doctor proxy
+ike doctor reality
+ike doctor xhttp
+ike smoke reality
+ike smoke xhttp --restart
+ike smoke all
+ike export report --output /root/xray-report.txt
+ike export clients --output /root/xray-clients.txt
 ike help
 ike version
 ike update
+ike xray version
+ike xray upgrade
+ike xray upgrade --version v25.1.1
+ike xray upgrade --dry-run
 ike backup
 ike bootstrap
 ike endpoint show
@@ -87,14 +116,40 @@ ike config path
 ike config test
 ike config edit
 ike service status
+ike service install
 ike service restart
+ike service logs
+ike service repair
 ike logs
+ike migrate --dry-run
+ike migrate
+ike uninstall --dry-run
+ike uninstall --keep-config
+ike uninstall --purge --yes
 ike cnblock
 ike cnblock basic
 ike cnblock enhanced
 ike cnblock off
 ike safety enhanced on
 ike safety enhanced off
+ike reality install
+ike reality install --dry-run
+ike reality install --port 30004
+ike reality install --defender-port 40004
+ike reality install --sni www.abmindustriesgroup.com
+ike reality install --port 30004 --defender-port 40004 --sni www.abmindustriesgroup.com
+ike reality install --port 30004 --defender-port 40004 --sni www.abmindustriesgroup.com --dry-run
+ike reality show
+ike reality remove
+ike xhttp install
+ike xhttp install --dry-run
+ike xhttp install --port 30005 --path /api/test --finalmask on
+ike xhttp install --port 30005 --path /api/test --finalmask off
+ike xhttp install --port 30005 --path /api/test --finalmask on --dry-run
+ike xhttp show
+ike xhttp remove
+ike view reality
+ike view xhttp
 ike tunnel list
 ike tunnel add
 ike tunnel add safe
@@ -145,11 +200,13 @@ ike tunnel del
 11. 开启/关闭增强安全屏蔽
 12. 导出当前配置备份
 13. Tunnel 中转管理
-14. 退出
+14. 安装 VLESS TCP REALITY
+15. 安装 VLESS Encryption + XHTTP + FinalMask
+16. 退出
 
 ## 本地开发与测试
 
-本项目的测试不依赖真实 Xray 服务，也不会启动 systemd；主要用于检查 shell 语法、脚本风格、空白错误，以及 Tunnel 中转函数在临时目录中的配置读写行为。
+本项目的测试不依赖真实 Xray 服务，也不会启动 systemd；主要用于检查 shell 语法、脚本风格、空白错误，以及 Tunnel / Reality / XHTTP-FinalMask 在临时目录中的静态结构和配置读写行为。真实 VPS 连通性、客户端导入兼容性和最新 Xray-core 行为仍需要在实机环境另测。
 
 建议准备以下工具：
 
@@ -195,13 +252,218 @@ bash scripts/test.sh
 bash -n install.sh
 shellcheck install.sh
 shfmt -d -i 4 -ci install.sh
-git diff --check -- install.sh README.md
+git diff --check -- install.sh README.md scripts/test.sh tests/test_reality_xhttp.sh tests/test_install_compat.sh
 bash tests/test_forward.sh
+bash tests/test_reality_xhttp.sh
+bash tests/test_install_compat.sh
 ```
 
 ## 发布前验收
 
-发布到 GitHub Release 或更新 `main` 分支前，建议在真实 Linux VPS 上按 [发布前 Smoke Test](docs/smoke-test.md) 完整验收一次。该清单覆盖基础安装、协议配置、无 `flow` 检查、Tunnel 中转、安全规则和卸载流程。
+发布到 GitHub Release 或更新 `main` 分支前，建议在真实 Linux VPS 上按 [发布前 Smoke Test](docs/smoke-test.md) 完整验收一次。该清单覆盖基础安装、协议配置、Reality Vision flow、Tunnel 中转、安全规则和卸载流程。
+
+## VPS 安装与测试流程
+
+本轮本地测试仍是静态、结构和脚本测试；真实连通性、客户端导入和最新 Xray-core 行为需要在 VPS 上另行烟测。建议主推 Debian 12 / Ubuntu 22.04+，其它 systemd Linux 可尝试，但遇到问题先运行 `ike preflight`。
+
+### 快速安装
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ike-sh/Xray-OneClick/main/install.sh -o install.sh
+bash install.sh
+ike preflight
+ike doctor all
+```
+
+重复执行基础安装时，脚本会保留已有配置并在写入前备份；同协议重复部署会覆盖同 tag 配置，不同协议互不影响。
+
+### 国内网络安装
+
+GitHub 访问不稳定时，可通过环境变量补充镜像，原始 GitHub URL 仍会优先尝试：
+
+```bash
+export XRAY_GITHUB_MIRRORS="https://gh.llkk.cc/,https://gh.ddlc.top/,https://gh-proxy.com/,https://ghproxy.net/"
+bash install.sh
+```
+
+下载失败时脚本会显示当前尝试 URL、继续尝试下一个镜像，并在全部失败后给出手动下载建议。不要把镜像地址当作唯一可信来源，生产环境仍建议核对 Xray-core 来源。
+
+### 指定 Xray-core 版本
+
+```bash
+ike xray upgrade --version v25.1.1
+ike xray upgrade --version v25.1.1 --dry-run
+ike xray upgrade --version v25.1.1 --restart
+```
+
+指定版本会直接拼接 GitHub Releases 资源 URL，不依赖 latest API；如果指定版本下载失败，脚本不会静默切换到 latest。当前脚本做基础包校验：文件非空、`unzip -t`、解压后 `xray version` 和配置测试，完整 sha256 校验后续再增强。
+
+### 系统预检
+
+```bash
+ike preflight
+ike doctor preflight
+```
+
+预检会检查 root 权限、Debian/Ubuntu 信息、systemd、amd64/arm64 架构、根分区剩余空间、curl/wget、jq、unzip、tar、openssl、ss/netstat、systemctl、journalctl、awk/sed/grep。空间不足 200MB 或缺少关键依赖时应先修复，不建议继续安装。
+
+### Reality 部署和 smoke
+
+Reality 对外入口端口默认随机范围为 `20000-50000`，也可用 `--port` 指定；defender 默认随机范围为 `39000-49999`，始终通过 `127.0.0.1` 转发到 SNI 的 `443`。SNI 只写域名，不要带 `https://`、路径或端口。
+
+```bash
+ike reality install --port 30004 --defender-port 40004 --sni www.abmindustriesgroup.com
+ike reality show
+ike doctor reality
+ike smoke reality
+ike smoke reality --restart
+xray run -test -c /etc/xray/config.json
+journalctl -u xray -n 80 --no-pager
+```
+
+### XHTTP FinalMask off 部署和 smoke
+
+```bash
+ike xhttp install --port 30005 --path /api/test --finalmask off
+ike xhttp show
+ike doctor xhttp
+ike smoke xhttp
+ike smoke xhttp --restart
+```
+
+`api/test` 这类 path 不会自动补斜杠，请使用 `/api/test`；path 不允许空格、`?`、`#` 或反斜杠。
+
+### XHTTP FinalMask on 部署和 smoke
+
+```bash
+ike xhttp install --port 30005 --path /api/test --finalmask on
+ike xhttp show
+ike doctor xhttp
+ike smoke xhttp
+```
+
+XHTTP + FinalMask 是实验功能，FinalMask 客户端兼容性取决于客户端内核版本；`fm=` 分享链接可能很长，部分客户端可能需要手动填写参数。如果 FinalMask 校验失败或客户端无法导入，先使用 `ike xhttp install --finalmask off`。
+
+### 导出客户端配置
+
+```bash
+ike export clients
+ike export clients --output /root/xray-clients.txt
+```
+
+`export clients` 只输出客户端需要的链接和参数，不输出 Reality `privateKey` 或 VLESS Encryption 服务端 `decryption`。导出的文件会尝试设置为 `600` 权限。
+
+### 诊断报告导出
+
+```bash
+ike export report
+ike export report --output /root/xray-report.txt
+```
+
+`export report` 会包含版本、已安装协议、inbound tag、监听端口、配置测试和最近日志摘要，并脱敏 private key、decryption、password、secret、token 等字段。
+
+### 升级 Xray-core
+
+```bash
+ike xray version
+ike xray upgrade
+ike xray upgrade --dry-run
+ike xray upgrade --restart
+```
+
+升级前会备份当前二进制；升级后先运行 `xray version` 和 `xray run -test -c /etc/xray/config.json`。配置测试失败时会回滚二进制；默认不自动重启，只有加 `--restart` 才会重启服务。
+
+### systemd service 管理
+
+```bash
+ike service install
+ike service status
+ike service restart
+ike service logs
+ike service repair
+```
+
+`service install` / `service repair` 会写入 `/etc/systemd/system/xray.service`，`ExecStart` 指向当前 `xray` 二进制和 `/etc/xray/config.json`。旧 service 会先备份；如果旧 service 不是本项目生成，脚本不会静默覆盖，非交互场景需要显式 `--yes`。`service restart` 会先 `daemon-reload`，失败时输出最近 `journalctl -u xray -n 80 --no-pager` 摘要。
+
+### doctor / smoke
+
+```bash
+ike doctor preflight
+ike doctor proxy
+ike doctor reality
+ike doctor xhttp
+ike doctor all
+ike smoke reality
+ike smoke reality --restart
+ike smoke xhttp
+ike smoke xhttp --restart
+ike smoke all
+```
+
+`doctor all` 会包含 preflight、proxy、Reality 和 XHTTP 检查；协议未安装时显示“未安装，跳过”，不会当作整体失败。`smoke` 默认不重启服务，只有加 `--restart` 才执行 restart；FinalMask on 且校验失败时优先尝试 `ike xhttp install --finalmask off`。
+
+### 迁移旧配置
+
+从 alpha.1 / alpha.2 / alpha.3 / alpha.4 升级到 beta.1 建议先检查再迁移：
+
+```bash
+ike doctor all
+ike migrate --dry-run
+ike migrate
+ike doctor all
+```
+
+迁移只补齐可推导的 state 字段，例如 Reality `flow` / `link`、XHTTP `finalmask_enabled` / `link`。推导不了时会给 warning，不会伪造字段，也不会删除用户协议。
+
+### 卸载/保留配置/彻底清理
+
+```bash
+ike uninstall --dry-run
+ike uninstall --keep-config
+ike uninstall --purge --yes
+```
+
+`--keep-config` 删除二进制、快捷命令和 service，但保留 `/etc/xray/config.json` 与 `installer-state.json`；`--purge` 会先创建最终备份包，再删除配置、state、日志、service、二进制和快捷命令。非交互 purge 必须显式加 `--yes`，脚本不会静默删除非本项目 service。
+
+### 实机测试推荐顺序
+
+```bash
+ike preflight
+ike xray version
+ike service status
+ike doctor all
+ike reality install --dry-run
+ike reality install --port 30004 --defender-port 40004 --sni www.abmindustriesgroup.com
+ike reality show
+ike smoke reality
+ike xhttp install --port 30005 --path /api/test --finalmask off
+ike xhttp show
+ike smoke xhttp
+ike export clients --output /root/xray-clients.txt
+ike export report --output /root/xray-report.txt
+```
+
+确认 Reality 可用后，再按需测试 `--finalmask on`。如果客户端无法导入带 `fm=` 的链接，请先使用 FinalMask off，并手动填写 path/encryption/finalmask 参数排查。
+
+### 常见问题
+
+**Q: FinalMask on 失败怎么办？**
+A: 先使用 `ike xhttp install --finalmask off`，并运行 `ike doctor xhttp` / `ike smoke xhttp`。FinalMask 需要较新 Xray-core 和客户端核心，不承诺所有客户端可直接导入。
+
+**Q: Reality 能随机端口吗？**
+A: 可以，默认随机 `20000-50000`，也可用 `--port` 指定。
+
+**Q: SNI 可以写 `https://domain/path` 吗？**
+A: 不可以，只写域名，不要带协议、路径、端口或空格。
+
+**Q: privateKey 要填客户端吗？**
+A: 不要。Reality `privateKey` 是服务端敏感字段，客户端填写 `publicKey`。
+
+**Q: 重复执行 install 会怎样？**
+A: 同协议 tag 覆盖，不同协议互不影响，写入前自动备份，不会故意清空已有配置。
+
+**Q: 国内 GitHub 下载失败怎么办？**
+A: 使用 `XRAY_GITHUB_MIRRORS` 补充镜像，或用 `ike xray upgrade --version vX.Y.Z` 指定版本。
 
 ## 支持协议
 
@@ -240,6 +502,60 @@ bash tests/test_forward.sh
 - 当前 `xray vlessenc` 命令本身不提供可直接指定这些选项的命令行参数；脚本会先生成匹配参数，再按 VLESS Encryption 字符串结构同步重写服务端和客户端字段。
 - 高级模式下，尤其选择 `ML-KEM-768` 时，生成的 `encryption` 和 `vless://` 分享链接可能非常长。部分客户端兼容性可能较差，必要时需要手动填写参数。
 - reverse、relay、多级 relay 等协议层能力当前脚本暂未开放，避免误导用户以为已经完整支持；需要这些能力时请手动维护 Xray 配置。
+
+### VLESS TCP REALITY
+
+`ike reality install` 会写入两个入站：
+
+- `vless+tcp+reality`：对外监听的 VLESS TCP REALITY 入口，端口可随机或通过 `--port` 指定。
+- `reality-defender`：仅监听 `127.0.0.1` 的 defender，默认转发到伪装域名的 `443`，端口可随机或通过 `--defender-port` 指定。
+
+伪装域名可以通过 `--sni DOMAIN` 指定，不指定时会从内置候选中随机选择，候选包含 `www.abmindustriesgroup.com`。SNI 只填写域名本身，不建议也不允许写成 `https://example.com`、`example.com:443` 或带路径的格式。脚本会尽量用 `openssl s_client -servername DOMAIN -connect DOMAIN:443` 检测目标 TLS 可达性；检测失败时交互模式默认取消，确认后才继续，非交互模式可用 `--yes` 或 `XRAY_ONECLICK_YES=1` 明确继续。若 TLS 探测失败，建议优先更换伪装域名。
+
+Reality target/dest 的实际出口默认是 `SNI:443`，经本机 `127.0.0.1` defender 转发；入口端口只用于客户端连接，可以随机或指定，不需要固定为 443。默认客户端和服务端 client 都使用 `xtls-rprx-vision`，分享链接会包含 `type=tcp`、`security=reality`、`pbk`、`sni`、`sid`、`flow=xtls-rprx-vision`、`spx` 等参数。
+
+`privateKey` 是服务端敏感字段，脚本会保存到 `installer-state.json` 并设置权限为 `600`，默认输出不会展示其值；`publicKey` 是客户端连接字段，可在 `ike reality show` 或 `ike view reality` 中查看。
+
+常用命令：
+
+```bash
+ike reality install
+ike reality install --port 30004 --defender-port 40004 --sni www.abmindustriesgroup.com
+ike reality install --port 30004 --defender-port 40004 --sni www.abmindustriesgroup.com --dry-run
+ike reality show
+ike doctor reality
+ike smoke reality
+ike reality remove
+ike view reality
+```
+
+### VLESS Encryption + XHTTP + FinalMask
+
+`ike xhttp install` 会继续调用现有 `xray vlessenc` 流程生成服务端 `decryption` 和客户端 `encryption`，并沿用 X25519 / ML-KEM-768、`native` / `xorpub` / `random`、`0rtt` / `1rtt`、ticket 有效期等选项。
+
+该模式默认生成 `security=none` + VLESS Encryption + `network=xhttp`，不写 TLS 证书逻辑，也不写 `xtls-rprx-vision` flow。`path` 可随机生成，也可通过 `--path /api/test` 指定；用户指定的 path 必须以 `/` 开头，长度不超过 128，不能包含空格、`?`、`#` 或反斜杠。`api/test` 不会自动修正为 `/api/test`，请直接写完整路径。
+
+FinalMask 属于实验能力，默认开启保守模板，但可以通过 `--finalmask off` 关闭。最终是否可用以 `xray run -test` 校验结果为准；如果 FinalMask 模板导致校验失败，脚本会触发回滚，可优先使用 `--finalmask off` 重试。分享链接里的 `fm` 会 URL 编码整个 FinalMask JSON，链接可能很长，不承诺所有客户端都能直接导入，客户端兼容性取决于客户端内核版本，必要时请手动填写参数。
+
+常用命令：
+
+```bash
+ike xhttp install
+ike xhttp install --port 30005 --path /api/test --finalmask on
+ike xhttp install --port 30005 --path /api/test --finalmask off
+ike xhttp install --port 30005 --path /api/test --finalmask on --dry-run
+ike xhttp show
+ike doctor xhttp
+ike smoke xhttp
+ike xhttp remove
+ike view xhttp
+```
+
+兼容性说明：
+
+- Reality TCP 相对稳定，但仍建议确认客户端内核支持 REALITY 和 `xtls-rprx-vision`。
+- XHTTP + FinalMask 是实验功能，FinalMask 需要较新的客户端内核；如果服务端校验失败或客户端不兼容，优先使用 `--finalmask off`。
+- 带 `fm` 的分享链接可能较长，部分客户端可能需要手动填写 FinalMask 参数。
 
 ### SOCKS5
 
@@ -594,7 +910,7 @@ ike logs
 - `ike config test` 执行 `xray run -test -c /etc/xray/config.json`。
 - `ike config edit` 使用 `$EDITOR`、`nano` 或 `vi` 打开配置，保存后先校验，校验通过才询问是否重启。
 - `ike service status` / `ike service restart` 按当前 init system 调用 systemd 或 OpenRC。
-- `ike logs` 在 systemd 下调用 `journalctl -u xray -e --no-pager`；OpenRC 下尝试读取 `/var/log/xray/access.log` 和 `/var/log/xray/error.log`。
+- `ike logs` 在 systemd 下调用 `journalctl -u xray -n 80 --no-pager`；OpenRC 下尝试读取 `/var/log/xray/access.log` 和 `/var/log/xray/error.log`。
 
 ## 常用验证
 
@@ -639,7 +955,7 @@ ike view
 systemctl status xray --no-pager
 systemctl restart xray
 systemctl stop xray
-journalctl -u xray -e --no-pager
+journalctl -u xray -n 80 --no-pager
 ```
 
 ## 文件路径

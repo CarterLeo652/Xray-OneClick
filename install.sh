@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2015
 
 set -o pipefail
 
@@ -18,13 +19,25 @@ LEGACY_SHORTCUT_PATH="/usr/local/bin/sb"
 INSTALLER_DIR="/usr/local/share/ike"
 INSTALLER_PATH="${INSTALLER_DIR}/install.sh"
 SCRIPT_NAME="Xray-OneClick"
-SCRIPT_VERSION="0.1.0"
+SCRIPT_VERSION="0.2.0-beta.1"
 REPO_URL="https://github.com/ike-sh/Xray-OneClick"
 RAW_SCRIPT_URL="https://raw.githubusercontent.com/ike-sh/Xray-OneClick/main/install.sh"
 XRAY_RELEASE_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
+XRAY_RELEASE_BASE="https://github.com/XTLS/Xray-core/releases/download"
+MIN_ROOT_FREE_KB="204800"
 
 SS_TAG="ss2022-in"
 VLESS_TAG="vless-enc-in"
+REALITY_TAG="vless+tcp+reality"
+REALITY_DEFENDER_TAG="reality-defender"
+REALITY_STATE_KEY="vless_reality"
+REALITY_PORT_MIN="20000"
+REALITY_PORT_MAX="50000"
+REALITY_DEFENDER_PORT_MIN="39000"
+REALITY_DEFENDER_PORT_MAX="49999"
+REALITY_FLOW_DEFAULT="xtls-rprx-vision"
+VLESS_XHTTP_FM_TAG="vless-enc-xhttp-finalmask-in"
+VLESS_XHTTP_FM_STATE_KEY="vless_xhttp_finalmask"
 SOCKS_TAG="socks-in"
 TUNNEL_TAG_PREFIX="tunnel-"
 LEGACY_FORWARD_TAG_PREFIX="forward-"
@@ -40,6 +53,17 @@ INIT_SYSTEM=""
 ARCH=""
 XRAY_ASSET=""
 
+REALITY_SNI_CANDIDATES=(
+    "www.abmindustriesgroup.com"
+    "www.microsoft.com"
+    "www.oracle.com"
+    "www.ibm.com"
+    "www.amazon.com"
+    "www.samsung.com"
+    "www.nvidia.com"
+    "www.cloudflare.com"
+)
+
 info() { echo -e "${YELLOW}$*${PLAIN}"; }
 ok() { echo -e "${GREEN}$*${PLAIN}"; }
 err() { echo -e "${RED}$*${PLAIN}"; }
@@ -50,16 +74,16 @@ die() {
 }
 
 ensure_root() {
-    [[ $EUID -eq 0 ]] || die "错误：必须使用 root 用户运行。"
+    [[ "${XRAY_ONECLICK_TEST_EUID:-$EUID}" -eq 0 ]] || die "错误：请使用 root 或 sudo 运行。"
 }
 
 check_os() {
     if [[ -f /etc/alpine-release ]]; then
         OS_TYPE="alpine"
         INIT_SYSTEM="openrc"
-    elif [[ -f /etc/os-release ]]; then
-        # shellcheck disable=SC1091
-        . /etc/os-release
+    elif [[ -f "${XRAY_ONECLICK_OS_RELEASE:-/etc/os-release}" ]]; then
+        # shellcheck disable=SC1090
+        . "${XRAY_ONECLICK_OS_RELEASE:-/etc/os-release}"
         OS_TYPE="${ID:-linux}"
         if command -v systemctl >/dev/null 2>&1; then
             INIT_SYSTEM="systemd"
@@ -72,7 +96,7 @@ check_os() {
 }
 
 detect_arch() {
-    ARCH="$(uname -m)"
+    ARCH="${XRAY_ONECLICK_UNAME_M:-$(uname -m)}"
     case "$ARCH" in
         x86_64 | amd64) XRAY_ASSET="Xray-linux-64.zip" ;;
         i386 | i686) XRAY_ASSET="Xray-linux-32.zip" ;;
@@ -138,7 +162,7 @@ install_dependencies() {
     local missing=()
     local tool
 
-    for tool in bash curl wget jq unzip openssl; do
+    for tool in bash curl wget jq unzip tar openssl; do
         command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
     done
 
@@ -149,19 +173,19 @@ install_dependencies() {
     case "$OS_TYPE" in
         alpine)
             apk update
-            apk add bash curl wget unzip openssl ca-certificates jq coreutils iproute2 procps net-tools
+            apk add bash curl wget unzip tar openssl ca-certificates jq coreutils iproute2 procps net-tools
             ;;
         ubuntu | debian)
             export DEBIAN_FRONTEND=noninteractive
             apt-get update
-            apt-get install -y bash curl wget unzip openssl ca-certificates jq coreutils iproute2 procps
+            apt-get install -y bash curl wget unzip tar openssl ca-certificates jq coreutils iproute2 procps
             ;;
         centos | rhel | rocky | almalinux | fedora)
             if command -v dnf >/dev/null 2>&1; then
-                dnf install -y bash curl wget unzip openssl ca-certificates jq coreutils iproute procps-ng
+                dnf install -y bash curl wget unzip tar openssl ca-certificates jq coreutils iproute procps-ng
             else
                 yum install -y epel-release >/dev/null 2>&1 || true
-                yum install -y bash curl wget unzip openssl ca-certificates jq coreutils iproute procps-ng
+                yum install -y bash curl wget unzip tar openssl ca-certificates jq coreutils iproute procps-ng
             fi
             ;;
         *)
@@ -193,6 +217,138 @@ prepare_system() {
     install_dependencies || return 1
     install_shortcut
     enable_bbr
+}
+
+preflight_root() {
+    if [[ "${XRAY_ONECLICK_TEST_EUID:-$EUID}" -eq 0 ]]; then
+        diag_ok "root 权限"
+        return 0
+    fi
+    diag_fail "非 root：请使用 root 或 sudo 运行。"
+    return 1
+}
+
+preflight_os() {
+    local os_file="${XRAY_ONECLICK_OS_RELEASE:-/etc/os-release}"
+    local id version pretty
+
+    if [[ ! -f "$os_file" ]]; then
+        diag_fail "未找到 os-release: $os_file"
+        return 1
+    fi
+    id="$(grep -E '^ID=' "$os_file" | head -n 1 | cut -d= -f2- | tr -d '"')"
+    version="$(grep -E '^VERSION_ID=' "$os_file" | head -n 1 | cut -d= -f2- | tr -d '"')"
+    pretty="$(grep -E '^PRETTY_NAME=' "$os_file" | head -n 1 | cut -d= -f2- | tr -d '"')"
+    case "$id" in
+        debian | ubuntu)
+            diag_ok "OS: ${pretty:-$id $version}"
+            ;;
+        *)
+            diag_warn "OS: ${pretty:-${id:-unknown}}；脚本主推 Debian 12 / Ubuntu 22.04+，其它系统请谨慎验证。"
+            ;;
+    esac
+}
+
+preflight_arch() {
+    local machine="${XRAY_ONECLICK_UNAME_M:-$(uname -m)}"
+
+    case "$machine" in
+        x86_64 | amd64)
+            diag_ok "架构: amd64"
+            ;;
+        aarch64 | arm64)
+            diag_ok "架构: arm64"
+            ;;
+        *)
+            diag_fail "不支持的架构: $machine"
+            return 1
+            ;;
+    esac
+}
+
+preflight_systemd() {
+    if ! command -v systemctl >/dev/null 2>&1; then
+        diag_fail "systemctl 不存在，当前脚本无法管理 xray.service。"
+        return 1
+    fi
+    if [[ ! -d "${XRAY_ONECLICK_SYSTEMD_DIR:-/run/systemd/system}" ]]; then
+        diag_fail "未检测到 systemd 运行目录 ${XRAY_ONECLICK_SYSTEMD_DIR:-/run/systemd/system}，不要写入不可用 service。"
+        return 1
+    fi
+    diag_ok "systemd 可用"
+}
+
+preflight_disk() {
+    local free_kb human
+
+    free_kb="${XRAY_ONECLICK_DISK_FREE_KB:-$(df -Pk / 2>/dev/null | awk 'NR==2{print $4}')}"
+    if [[ -z "$free_kb" || ! "$free_kb" =~ ^[0-9]+$ ]]; then
+        diag_warn "无法读取根分区可用空间"
+        return 0
+    fi
+    human="$(awk -v kb="$free_kb" 'BEGIN{if(kb>=1048576) printf "%.1fG", kb/1048576; else printf "%.0fM", kb/1024}')"
+    if ((free_kb < MIN_ROOT_FREE_KB)); then
+        diag_fail "根分区可用空间不足: ${human}，建议至少 200M；可清理 apt cache 或 journal。"
+        return 1
+    fi
+    diag_ok "根分区可用空间: ${human}"
+}
+
+preflight_network_tools() {
+    local missing_critical=()
+    local missing_optional=()
+    local tool
+
+    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+        missing_critical+=("curl或wget")
+    fi
+    for tool in jq unzip openssl; do
+        command -v "$tool" >/dev/null 2>&1 || missing_critical+=("$tool")
+    done
+    for tool in tar systemctl journalctl awk sed grep; do
+        command -v "$tool" >/dev/null 2>&1 || missing_optional+=("$tool")
+    done
+    if ! command -v ss >/dev/null 2>&1 && ! command -v netstat >/dev/null 2>&1; then
+        missing_optional+=("ss或netstat")
+    fi
+
+    if ((${#missing_critical[@]} > 0)); then
+        diag_fail "缺少关键依赖: ${missing_critical[*]}"
+        return 1
+    fi
+    diag_ok "关键依赖可用"
+    if ((${#missing_optional[@]} > 0)); then
+        diag_warn "缺少可选工具: ${missing_optional[*]}"
+    else
+        diag_ok "常用诊断工具可用"
+    fi
+}
+
+preflight_ports() {
+    if command -v ss >/dev/null 2>&1 || command -v netstat >/dev/null 2>&1; then
+        diag_ok "端口监听检测工具可用"
+    else
+        diag_warn "ss/netstat 未安装，将跳过监听检测"
+    fi
+}
+
+print_preflight_summary() {
+    echo -e "\n${YELLOW}系统预检${PLAIN}"
+    echo "----------------------------------------"
+}
+
+preflight_system() {
+    local failed="false"
+
+    print_preflight_summary
+    preflight_root || failed="true"
+    preflight_os || failed="true"
+    preflight_systemd || failed="true"
+    preflight_arch || failed="true"
+    preflight_disk || failed="true"
+    preflight_network_tools || failed="true"
+    preflight_ports || true
+    [[ "$failed" != "true" ]]
 }
 
 ensure_config_security() {
@@ -404,11 +560,44 @@ validate_config_file() {
     return 0
 }
 
-create_service() {
-    mkdir -p "$ASSET_DIR" /var/log/xray
+service_file_path() {
+    printf '%s' "${XRAY_SERVICE_FILE:-/etc/systemd/system/${SERVICE_NAME}.service}"
+}
 
-    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
-        cat >"/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
+log_dir_path() {
+    printf '%s' "${XRAY_LOG_DIR:-/var/log/xray}"
+}
+
+validate_service_file() {
+    local service_file="${1:-$(service_file_path)}"
+
+    [[ -f "$service_file" ]] || return 1
+    grep -q "ExecStart=$BIN_PATH run -c $CONFIG_FILE" "$service_file"
+}
+
+write_xray_service() {
+    local service_file="${1:-$(service_file_path)}"
+    local assume_yes="${2:-false}"
+    local backup_path
+
+    mkdir -p "$(dirname "$service_file")" "$ASSET_DIR" "$(log_dir_path)"
+    if [[ -f "$service_file" ]]; then
+        backup_path="${service_file}.bak.$(date +%Y%m%d%H%M%S)"
+        cp -a "$service_file" "$backup_path" || {
+            err "[服务] 备份旧 service 失败: $backup_path"
+            return 1
+        }
+        if ! grep -q "Managed by Xray-OneClick" "$service_file"; then
+            info "[服务] 检测到非本项目生成的 service，已备份到: $backup_path"
+            if [[ "$assume_yes" != "true" ]] && ! env_truthy "${XRAY_ONECLICK_YES:-}"; then
+                err "[服务] 非交互模式未确认覆盖 service；如需覆盖请添加 --yes 或设置 XRAY_ONECLICK_YES=1。"
+                return 1
+            fi
+        fi
+    fi
+
+    cat >"$service_file" <<EOF
+# Managed by Xray-OneClick
 [Unit]
 Description=Xray Service
 Documentation=https://github.com/XTLS/Xray-core
@@ -429,13 +618,42 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=$CONFIG_DIR /var/log/xray
+ReadWritePaths=$CONFIG_DIR $(log_dir_path)
 
 [Install]
 WantedBy=multi-user.target
 EOF
-        systemctl daemon-reload
-        systemctl enable "$SERVICE_NAME" >/dev/null 2>&1 || true
+    validate_service_file "$service_file" || {
+        err "[服务] service 文件校验失败: $service_file"
+        return 1
+    }
+}
+
+enable_xray_service() {
+    if ! command -v systemctl >/dev/null 2>&1; then
+        err "[服务] systemctl 不存在，无法启用服务。"
+        return 1
+    fi
+    systemctl daemon-reload || {
+        err "[服务] systemctl daemon-reload 失败。"
+        return 1
+    }
+    systemctl enable "$SERVICE_NAME" >/dev/null 2>&1 || {
+        err "[服务] systemctl enable ${SERVICE_NAME} 失败。"
+        return 1
+    }
+}
+
+ensure_xray_service() {
+    local assume_yes="${1:-false}"
+
+    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+        if [[ ! -d "${XRAY_ONECLICK_SYSTEMD_DIR:-/run/systemd/system}" && "${XRAY_ONECLICK_ALLOW_FAKE_SYSTEMD:-false}" != "true" ]]; then
+            err "[服务] 未检测到 systemd 运行目录，已跳过写入不可用 service。"
+            return 1
+        fi
+        write_xray_service "$(service_file_path)" "$assume_yes" || return 1
+        enable_xray_service || return 1
     elif [[ "$INIT_SYSTEM" == "openrc" ]]; then
         cat >"/etc/init.d/${SERVICE_NAME}" <<EOF
 #!/sbin/openrc-run
@@ -454,13 +672,43 @@ EOF
     fi
 }
 
-restart_service() {
+create_service() {
+    ensure_xray_service "${XRAY_ONECLICK_YES:-false}"
+}
+
+restart_xray_service() {
     if [[ "$INIT_SYSTEM" == "systemd" ]]; then
-        systemctl restart "$SERVICE_NAME"
+        systemctl daemon-reload || {
+            err "[服务] systemctl daemon-reload 失败。"
+            return 1
+        }
+        systemctl restart "$SERVICE_NAME" || {
+            err "[服务] xray restart 失败，最近日志如下:"
+            if command -v journalctl >/dev/null 2>&1; then
+                journalctl -u "$SERVICE_NAME" -n 80 --no-pager 2>&1 | redact_sensitive_stream || true
+            fi
+            return 1
+        }
     elif [[ "$INIT_SYSTEM" == "openrc" ]]; then
         rc-service "$SERVICE_NAME" restart
     else
         err "[服务] 无法自动重启，请手动运行: $BIN_PATH run -c $CONFIG_FILE"
+        return 1
+    fi
+}
+
+restart_service() {
+    restart_xray_service
+}
+
+status_xray_service() {
+    if [[ "$INIT_SYSTEM" == "systemd" ]] && command -v systemctl >/dev/null 2>&1; then
+        systemctl status "$SERVICE_NAME" --no-pager 2>&1 | redact_sensitive_stream
+        return "${PIPESTATUS[0]}"
+    elif [[ "$INIT_SYSTEM" == "openrc" ]] && command -v rc-service >/dev/null 2>&1; then
+        rc-service "$SERVICE_NAME" status
+    else
+        err "[服务] 未检测到 systemd/openrc，无法读取服务状态。"
         return 1
     fi
 }
@@ -529,6 +777,208 @@ replace_xray_binary() {
     }
 }
 
+detect_xray_version() {
+    if [[ ! -x "$BIN_PATH" ]]; then
+        printf '%s' "未安装"
+        return 1
+    fi
+    "$BIN_PATH" version 2>/dev/null | head -n 1 | sed -E 's/^Xray[[:space:]]+//; s/[[:space:]].*$//' || return 1
+}
+
+detect_xray_feature_support() {
+    local version
+
+    version="$(detect_xray_version 2>/dev/null || true)"
+    if [[ -z "$version" || "$version" == "未安装" ]]; then
+        diag_warn "Xray 未安装，无法判断 Reality/XHTTP/FinalMask 兼容性"
+        return 0
+    fi
+    diag_info "Xray 当前版本: $version"
+    diag_info "Reality 通常需要较新的 Xray-core；最终以 xray run -test 和客户端实测为准。"
+    diag_info "XHTTP/FinalMask 仍是实验能力，建议保持 Xray-core 为最新版本。"
+}
+
+print_xray_version_summary() {
+    echo -e "\n${YELLOW}Xray 版本信息${PLAIN}"
+    echo "----------------------------------------"
+    echo "Binary: $BIN_PATH"
+    echo "Version: $(detect_xray_version 2>/dev/null || printf '%s' '未安装')"
+    detect_xray_feature_support
+}
+
+github_mirror_urls() {
+    local original="$1"
+    local mirrors="${XRAY_GITHUB_MIRRORS:-}"
+    local mirror
+    local -a mirror_list
+
+    printf '%s\n' "$original"
+    IFS=',' read -r -a mirror_list <<<"$mirrors"
+    for mirror in "${mirror_list[@]}"; do
+        mirror="${mirror//[[:space:]]/}"
+        [[ -n "$mirror" ]] || continue
+        printf '%s%s\n' "$mirror" "$original"
+    done
+}
+
+download_one_url() {
+    local url="$1"
+    local output="$2"
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -fL --connect-timeout 10 --max-time 120 -H "User-Agent: xray-installer" -o "$output" "$url"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -T 120 -O "$output" "$url"
+    else
+        err "[核心] 缺少 curl 或 wget，无法下载。"
+        return 1
+    fi
+}
+
+download_with_mirrors() {
+    local original_url="$1"
+    local output="$2"
+    local url last_error=""
+    local -a urls=()
+
+    mapfile -t urls < <(github_mirror_urls "$original_url")
+    for url in "${urls[@]}"; do
+        info "[核心] 尝试下载: $url"
+        if download_one_url "$url" "$output"; then
+            [[ -s "$output" ]] && return 0
+            last_error="下载文件为空"
+        else
+            last_error="下载失败"
+        fi
+        rm -f "$output"
+        info "[核心] 当前 URL 失败，尝试下一个镜像..."
+    done
+    err "[核心] 所有下载 URL 均失败: ${last_error}"
+    err "[核心] 可手动下载 ${XRAY_ASSET} 后放置到服务器，或设置 XRAY_GITHUB_MIRRORS 后重试。"
+    return 1
+}
+
+xray_release_asset_url() {
+    local version="${1:-latest}"
+    local release_json latest_url
+
+    if [[ "$version" != "latest" ]]; then
+        printf '%s/%s/%s' "$XRAY_RELEASE_BASE" "$version" "$XRAY_ASSET"
+        return 0
+    fi
+
+    release_json="$(download_release_metadata)" || return 1
+    latest_url="$(echo "$release_json" | jq -r --arg asset "$XRAY_ASSET" '.assets[]? | select(.name == $asset) | .browser_download_url' | head -n 1)"
+    XRAY_DOWNLOAD_VERSION="$(echo "$release_json" | jq -r '.tag_name // "latest"')"
+    [[ -n "$latest_url" && "$latest_url" != "null" ]] || return 1
+    printf '%s' "$latest_url"
+}
+
+download_release_metadata() {
+    local tmp
+
+    tmp="$(mktemp)" || return 1
+    if download_one_url "$XRAY_RELEASE_API" "$tmp" >/dev/null 2>&1; then
+        cat "$tmp"
+        rm -f "$tmp"
+        return 0
+    fi
+    rm -f "$tmp"
+    err "[核心] 无法访问 GitHub Releases API；可使用 --xray-version 指定版本。"
+    return 1
+}
+
+verify_xray_archive() {
+    local zip_path="$1"
+    local extract_dir="$2"
+    local xray_bin
+
+    [[ -s "$zip_path" ]] || {
+        err "[核心] Xray 压缩包不存在或为空。"
+        return 1
+    }
+    unzip -t "$zip_path" >/dev/null || {
+        err "[核心] unzip -t 校验失败。"
+        return 1
+    }
+    unzip -qo "$zip_path" -d "$extract_dir" || {
+        err "[核心] 解压失败。"
+        return 1
+    }
+    xray_bin="${extract_dir}/xray"
+    [[ -f "$xray_bin" ]] || xray_bin="$(find "$extract_dir" -type f -name xray | head -n 1)"
+    [[ -n "$xray_bin" && -f "$xray_bin" ]] || {
+        err "[核心] 压缩包中未找到 xray 二进制。"
+        return 1
+    }
+    chmod +x "$xray_bin"
+    "$xray_bin" version >/dev/null 2>&1 || {
+        err "[核心] 解压后的 xray 无法运行 version。"
+        return 1
+    }
+    XRAY_EXTRACTED_BINARY="$xray_bin"
+}
+
+download_xray_core() {
+    local version="${1:-latest}"
+    local tmpdir="${2:-}"
+    local url zip_path
+
+    [[ -n "$tmpdir" ]] || tmpdir="$(mktemp -d)"
+    mkdir -p "$tmpdir"
+    XRAY_DOWNLOAD_VERSION="$version"
+    url="$(xray_release_asset_url "$version")" || {
+        err "[核心] 无法解析 Xray 下载地址。"
+        return 1
+    }
+    zip_path="${tmpdir}/${XRAY_ASSET}"
+    download_with_mirrors "$url" "$zip_path" || return 1
+    verify_xray_archive "$zip_path" "$tmpdir" || return 1
+}
+
+install_xray_binary() {
+    local xray_bin="$1"
+
+    mkdir -p "$(dirname "$BIN_PATH")" "$ASSET_DIR" || return 1
+    replace_xray_binary "$xray_bin"
+}
+
+upgrade_xray_core() {
+    local version="${1:-latest}"
+    local dry_run="${2:-false}"
+    local restart="${3:-false}"
+    local tmpdir backup_path=""
+
+    detect_arch
+    tmpdir="$(mktemp -d)" || return 1
+    download_xray_core "$version" "$tmpdir" || {
+        rm -rf "$tmpdir"
+        return 1
+    }
+    if [[ "$dry_run" == "true" ]]; then
+        echo "[dry-run] 将安装 Xray: $("$XRAY_EXTRACTED_BINARY" version 2>/dev/null | head -n 1)"
+        echo "[dry-run] 不修改当前二进制: $BIN_PATH"
+        rm -rf "$tmpdir"
+        return 0
+    fi
+
+    [[ -e "$BIN_PATH" ]] && backup_path="${BIN_PATH}.bak.$(date +%Y%m%d%H%M%S)" && cp -a "$BIN_PATH" "$backup_path"
+    install_xray_binary "$XRAY_EXTRACTED_BINARY" || {
+        [[ -n "$backup_path" && -f "$backup_path" ]] && cp -a "$backup_path" "$BIN_PATH"
+        rm -rf "$tmpdir"
+        return 1
+    }
+    if [[ -f "$CONFIG_FILE" ]] && ! validate_config_file; then
+        err "[核心] 升级后配置校验失败，正在回滚 xray binary。"
+        [[ -n "$backup_path" && -f "$backup_path" ]] && cp -a "$backup_path" "$BIN_PATH"
+        rm -rf "$tmpdir"
+        return 1
+    fi
+    "$BIN_PATH" version 2>/dev/null | head -n 3 || true
+    [[ "$restart" == "true" ]] && restart_xray_service
+    rm -rf "$tmpdir"
+}
+
 apply_config() {
     local context="${1:-}"
 
@@ -571,51 +1021,23 @@ apply_config() {
 
 install_or_update_xray() {
     local force="${1:-false}"
-    local release_json latest_url version tmpdir zip_path xray_bin replacing_existing
+    local version="${XRAY_VERSION_REQUEST:-latest}"
+    local tmpdir replacing_existing
 
     install_dependencies || return 1
     init_config || return 1
     init_state || return 1
 
     if [[ -x "$BIN_PATH" && "$force" != "true" ]]; then
+        info "[核心] Xray 已安装: $(detect_xray_version 2>/dev/null || printf '%s' unknown)"
         create_service || return 1
         return 0
     fi
 
-    info "[核心] 获取 Xray 最新版本..."
-    release_json="$(curl -fsSL --retry 3 -H "User-Agent: xray-installer" "$XRAY_RELEASE_API")" || {
-        err "[核心] 无法访问 Xray GitHub Releases。"
-        return 1
-    }
-    latest_url="$(echo "$release_json" | jq -r --arg asset "$XRAY_ASSET" '.assets[] | select(.name == $asset) | .browser_download_url' | head -n 1)"
-    version="$(echo "$release_json" | jq -r '.tag_name // empty')"
-
-    if [[ -z "$latest_url" || "$latest_url" == "null" ]]; then
-        err "[核心] 未找到适配当前架构的 Xray 包: $XRAY_ASSET"
-        return 1
-    fi
-
     tmpdir="$(mktemp -d)"
-    zip_path="${tmpdir}/${XRAY_ASSET}"
-
-    info "[核心] 下载 Xray ${version:-latest} (${XRAY_ASSET})..."
-    if ! curl -fL --retry 3 -H "User-Agent: xray-installer" -o "$zip_path" "$latest_url"; then
+    info "[核心] 下载 Xray ${version} (${XRAY_ASSET})..."
+    if ! download_xray_core "$version" "$tmpdir"; then
         rm -rf "$tmpdir"
-        err "[核心] 下载失败。"
-        return 1
-    fi
-
-    if ! unzip -qo "$zip_path" -d "$tmpdir"; then
-        rm -rf "$tmpdir"
-        err "[核心] 解压失败。"
-        return 1
-    fi
-
-    xray_bin="${tmpdir}/xray"
-    [[ -f "$xray_bin" ]] || xray_bin="$(find "$tmpdir" -type f -name xray | head -n 1)"
-    if [[ -z "$xray_bin" || ! -f "$xray_bin" ]]; then
-        rm -rf "$tmpdir"
-        err "[核心] 压缩包中未找到 xray 二进制。"
         return 1
     fi
 
@@ -640,7 +1062,7 @@ install_or_update_xray() {
         fi
     fi
 
-    if ! replace_xray_binary "$xray_bin"; then
+    if ! replace_xray_binary "$XRAY_EXTRACTED_BINARY"; then
         rm -rf "$tmpdir"
         return 1
     fi
@@ -665,7 +1087,7 @@ install_or_update_xray() {
         return 1
     fi
 
-    ok "[核心] Xray ${version:-latest} 安装/更新完成。"
+    ok "[核心] Xray ${XRAY_DOWNLOAD_VERSION:-$version} 安装/更新完成。"
 }
 
 update_xray_core() {
@@ -687,9 +1109,11 @@ check_port() {
     local port="$1"
     if command -v ss >/dev/null 2>&1; then
         ss -tulpn 2>/dev/null | grep -qE "[:.]${port}[[:space:]]" && return 1
-    fi
-    if command -v netstat >/dev/null 2>&1; then
+    elif command -v netstat >/dev/null 2>&1; then
         netstat -tulpn 2>/dev/null | grep -qE "[:.]${port}[[:space:]]" && return 1
+    elif [[ "${PORT_CHECK_WARNING_SHOWN:-false}" != "true" ]]; then
+        info "[提示] 未找到 ss/netstat，跳过系统监听端口检测，仅检查 config.json。"
+        PORT_CHECK_WARNING_SHOWN="true"
     fi
     return 0
 }
@@ -765,7 +1189,119 @@ b64_url_no_pad() {
 }
 
 url_encode() {
-    jq -rn --arg v "$1" '$v|@uri'
+    MSYS2_ENV_CONV_EXCL="URL_ENCODE_VALUE" URL_ENCODE_VALUE="$1" jq -rn 'env.URL_ENCODE_VALUE|@uri'
+}
+
+json_url_encode() {
+    jq -crn --argjson v "$1" '$v | tojson | @uri'
+}
+
+generate_uuid() {
+    local uuid
+
+    if [[ -x "$BIN_PATH" ]]; then
+        uuid="$("$BIN_PATH" uuid 2>/dev/null | tr -d '\r\n' || true)"
+        if [[ -n "$uuid" ]]; then
+            printf '%s' "$uuid"
+            return 0
+        fi
+    fi
+    if command -v uuidgen >/dev/null 2>&1; then
+        uuid="$(uuidgen | tr '[:upper:]' '[:lower:]' | tr -d '\r\n')"
+        if [[ -n "$uuid" ]]; then
+            printf '%s' "$uuid"
+            return 0
+        fi
+    fi
+    if [[ -f /proc/sys/kernel/random/uuid ]]; then
+        tr -d '\r\n' </proc/sys/kernel/random/uuid
+        return 0
+    fi
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -hex 16 | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{12})/\1-\2-\3-\4-\5/'
+        return 0
+    fi
+    return 1
+}
+
+port_used_in_config() {
+    local port="$1"
+
+    [[ -f "$CONFIG_FILE" ]] || return 1
+    validate_port "$port" || return 1
+    command -v jq >/dev/null 2>&1 || return 1
+    jq -e --argjson port "$port" 'any(.inbounds[]?; (.port? // empty) == $port)' "$CONFIG_FILE" >/dev/null 2>&1
+}
+
+random_free_port() {
+    local min="$1"
+    local max="$2"
+    local span port rand attempt
+
+    validate_port "$min" || return 1
+    validate_port "$max" || return 1
+    ((min <= max)) || return 1
+    span=$((max - min + 1))
+
+    for ((attempt = 0; attempt < 200; attempt++)); do
+        if command -v openssl >/dev/null 2>&1; then
+            rand=$((16#$(openssl rand -hex 2)))
+        else
+            rand=$RANDOM
+        fi
+        port=$((min + rand % span))
+        if ! port_used_in_config "$port" && check_port "$port"; then
+            printf '%s' "$port"
+            return 0
+        fi
+    done
+
+    for ((port = min; port <= max; port++)); do
+        if ! port_used_in_config "$port" && check_port "$port"; then
+            printf '%s' "$port"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+split_endpoint_for_link() {
+    local local_port="$1"
+    local preferred_host="${2:-}"
+    local custom endpoint host port
+
+    custom="$(endpoint_custom_value)"
+    if [[ -n "$custom" ]]; then
+        if [[ "$custom" =~ ^(\[[^]]+\]):([0-9]+)$ ]]; then
+            host="${BASH_REMATCH[1]}"
+            port="${BASH_REMATCH[2]}"
+        elif [[ "$custom" =~ ^([^:]+):([0-9]+)$ ]]; then
+            host="${BASH_REMATCH[1]}"
+            port="${BASH_REMATCH[2]}"
+        else
+            host="$custom"
+            port="$local_port"
+        fi
+    elif [[ -n "$preferred_host" ]]; then
+        host="$preferred_host"
+        port="$local_port"
+    elif [[ -n "${IPV4_HOST:-}" ]]; then
+        host="$IPV4_HOST"
+        port="$local_port"
+    elif [[ -n "${IPV6_HOST:-}" ]]; then
+        host="$IPV6_HOST"
+        port="$local_port"
+    else
+        endpoint="$(endpoint_auto_value || true)"
+        host="${endpoint:-YOUR_SERVER}"
+        port="$local_port"
+    fi
+
+    if [[ "$host" == *:* && "$host" != \[*\] ]]; then
+        host="[${host}]"
+    fi
+    printf '%s\t%s' "$host" "$port"
 }
 
 generate_ss2022_password() {
@@ -1141,6 +1677,990 @@ install_vless_encryption() {
     view_config
 }
 
+validate_reality_sni() {
+    local domain="$1"
+    local label
+    local -a labels
+
+    [[ -n "$domain" && ${#domain} -le 253 ]] || return 1
+    [[ "$domain" != *"://"* && "$domain" != *"/"* && "$domain" != *":"* ]] || return 1
+    [[ "$domain" =~ ^[A-Za-z0-9.-]+$ ]] || return 1
+    [[ "$domain" == *.* ]] || return 1
+    [[ "$domain" != .* && "$domain" != *. ]] || return 1
+    [[ "$domain" != *..* ]] || return 1
+
+    IFS='.' read -r -a labels <<<"$domain"
+    for label in "${labels[@]}"; do
+        [[ -n "$label" && ${#label} -le 63 ]] || return 1
+        [[ "$label" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] || return 1
+    done
+    return 0
+}
+
+generate_reality_short_ids() {
+    local len id
+    local -a lengths=(2 4 6 8 10 12 14 16)
+
+    REALITY_SHORT_IDS=()
+    for len in "${lengths[@]}"; do
+        id="$(openssl rand -hex "$((len / 2))" | cut -c "1-${len}")" || return 1
+        REALITY_SHORT_IDS+=("$id")
+    done
+    REALITY_DEFAULT_SHORT_ID="${REALITY_SHORT_IDS[0]}"
+    REALITY_SHORT_IDS_JSON="$(printf '%s\n' "${REALITY_SHORT_IDS[@]}" | jq -R . | jq -s -c .)" || return 1
+}
+
+generate_reality_keys() {
+    local output
+
+    output="$("$BIN_PATH" x25519 2>/dev/null)" || {
+        err "[Reality] xray x25519 执行失败，请确认 Xray 版本支持 REALITY。"
+        return 1
+    }
+
+    REALITY_PRIVATE_KEY="$(printf '%s\n' "$output" | sed -n 's/.*[Pp]rivate key: *//p' | head -n 1 | tr -d '\r')"
+    REALITY_PUBLIC_KEY="$(printf '%s\n' "$output" | sed -n 's/.*[Pp]ublic key: *//p' | head -n 1 | tr -d '\r')"
+    if [[ -z "$REALITY_PRIVATE_KEY" || -z "$REALITY_PUBLIC_KEY" ]]; then
+        err "[Reality] 无法解析 xray x25519 输出。"
+        return 1
+    fi
+}
+
+test_reality_target_tls() {
+    local domain="$1"
+
+    if env_truthy "${REALITY_SKIP_TLS_TEST:-}"; then
+        return 0
+    fi
+    command -v openssl >/dev/null 2>&1 || {
+        info "[Reality] 未找到 openssl，已跳过 DOMAIN:443 可达性检测。"
+        return 0
+    }
+
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 8 openssl s_client -servername "$domain" -connect "${domain}:443" </dev/null >/dev/null 2>&1
+    else
+        openssl s_client -servername "$domain" -connect "${domain}:443" </dev/null >/dev/null 2>&1
+    fi
+}
+
+ask_or_random_reality_port() {
+    local prompt="$1"
+    local min="$2"
+    local max="$3"
+    local requested="$4"
+    local __resultvar="$5"
+    local input port
+
+    if [[ -n "$requested" ]]; then
+        validate_port "$requested" || {
+            err "[Reality] 端口无效: $requested"
+            return 1
+        }
+        if port_used_in_config "$requested" || ! check_port "$requested"; then
+            err "[Reality] 端口已被占用或已存在于 config.json: $requested"
+            return 1
+        fi
+        printf -v "$__resultvar" '%s' "$requested"
+        return 0
+    fi
+
+    if [[ "${REALITY_CONFIG_MODE:-interactive}" != "interactive" ]]; then
+        port="$(random_free_port "$min" "$max")" || {
+            err "[Reality] 无法在 ${min}-${max} 中找到可用端口。"
+            return 1
+        }
+        printf -v "$__resultvar" '%s' "$port"
+        return 0
+    fi
+
+    while true; do
+        read -r -p "${prompt} (回车随机 ${min}-${max}): " input
+        if [[ -z "$input" ]]; then
+            port="$(random_free_port "$min" "$max")" || {
+                err "[Reality] 无法在 ${min}-${max} 中找到可用端口。"
+                return 1
+            }
+            info "[Reality] 随机选择端口: ${port}"
+            printf -v "$__resultvar" '%s' "$port"
+            return 0
+        fi
+        if ! validate_port "$input"; then
+            err "[Reality] 端口无效，请输入 1-65535。"
+            continue
+        fi
+        if port_used_in_config "$input" || ! check_port "$input"; then
+            err "[Reality] 端口 ${input} 已被占用或已存在于 config.json。"
+            continue
+        fi
+        warn_reserved_port "$input"
+        printf -v "$__resultvar" '%s' "$input"
+        return 0
+    done
+}
+
+ask_or_random_reality_sni() {
+    local requested="${1:-}"
+    local __resultvar="$2"
+    local input index domain
+
+    if [[ -n "$requested" ]]; then
+        validate_reality_sni "$requested" || {
+            err "[Reality] SNI 域名格式无效: $requested"
+            return 1
+        }
+        printf -v "$__resultvar" '%s' "$requested"
+        return 0
+    fi
+
+    if [[ "${REALITY_CONFIG_MODE:-interactive}" != "interactive" ]]; then
+        index=$((RANDOM % ${#REALITY_SNI_CANDIDATES[@]}))
+        domain="${REALITY_SNI_CANDIDATES[$index]}"
+        printf -v "$__resultvar" '%s' "$domain"
+        return 0
+    fi
+
+    while true; do
+        read -r -p "Reality 伪装域名 SNI (回车随机): " input
+        if [[ -z "$input" ]]; then
+            index=$((RANDOM % ${#REALITY_SNI_CANDIDATES[@]}))
+            domain="${REALITY_SNI_CANDIDATES[$index]}"
+            info "[Reality] 随机选择 SNI: ${domain}"
+            printf -v "$__resultvar" '%s' "$domain"
+            return 0
+        fi
+        if validate_reality_sni "$input"; then
+            printf -v "$__resultvar" '%s' "$input"
+            return 0
+        fi
+        err "[Reality] SNI 域名格式无效，请输入类似 www.example.com 的域名。"
+    done
+}
+
+configure_reality() {
+    local mode="${1:-interactive}"
+    local retry_port
+
+    REALITY_CONFIG_MODE="$mode"
+    if [[ "$mode" != "dry-run" ]]; then
+        install_or_update_xray || return 1
+    fi
+
+    ask_or_random_reality_port "Reality 入口端口" "$REALITY_PORT_MIN" "$REALITY_PORT_MAX" "${REALITY_PORT_REQUEST:-}" REALITY_PORT || return 1
+    ask_or_random_reality_port "Reality defender 本地端口" "$REALITY_DEFENDER_PORT_MIN" "$REALITY_DEFENDER_PORT_MAX" "${REALITY_DEFENDER_PORT_REQUEST:-}" REALITY_DEFENDER_PORT || return 1
+    if [[ "$REALITY_PORT" == "$REALITY_DEFENDER_PORT" ]]; then
+        if [[ -z "${REALITY_DEFENDER_PORT_REQUEST:-}" ]]; then
+            for _ in {1..20}; do
+                retry_port="$(random_free_port "$REALITY_DEFENDER_PORT_MIN" "$REALITY_DEFENDER_PORT_MAX" || true)"
+                [[ -n "$retry_port" && "$retry_port" != "$REALITY_PORT" ]] || continue
+                REALITY_DEFENDER_PORT="$retry_port"
+                break
+            done
+        elif [[ -z "${REALITY_PORT_REQUEST:-}" ]]; then
+            for _ in {1..20}; do
+                retry_port="$(random_free_port "$REALITY_PORT_MIN" "$REALITY_PORT_MAX" || true)"
+                [[ -n "$retry_port" && "$retry_port" != "$REALITY_DEFENDER_PORT" ]] || continue
+                REALITY_PORT="$retry_port"
+                break
+            done
+        fi
+    fi
+    if [[ "$REALITY_PORT" == "$REALITY_DEFENDER_PORT" ]]; then
+        err "[Reality] 入口端口和 defender 端口不能相同。"
+        return 1
+    fi
+
+    ask_or_random_reality_sni "${REALITY_SNI_REQUEST:-}" REALITY_SERVER_NAME || return 1
+    info "[Reality] 建议 target 使用 ${REALITY_SERVER_NAME}:443；入口端口可随机，defender 始终转发到 443。"
+    if ! test_reality_target_tls "$REALITY_SERVER_NAME"; then
+        err "[Reality] ${REALITY_SERVER_NAME}:443 TLS 探测失败。"
+        if [[ "$mode" == "interactive" ]]; then
+            confirm_yes_no "仍然继续写入 Reality 配置?" "n" || return 1
+        elif ! { env_truthy "${XRAY_ONECLICK_YES:-}" || env_truthy "${REALITY_ASSUME_YES:-}"; }; then
+            err "[Reality] 非交互模式默认取消；确认目标可用后可设置 XRAY_ONECLICK_YES=1 重试。"
+            return 1
+        fi
+    fi
+
+    REALITY_UUID="$(generate_uuid)" || {
+        err "[Reality] UUID 生成失败。"
+        return 1
+    }
+    REALITY_SPIDER_X="/"
+    REALITY_EMPTY_CLIENTS="${REALITY_EMPTY_CLIENTS:-false}"
+    if [[ "$REALITY_EMPTY_CLIENTS" == "true" ]]; then
+        REALITY_FLOW=""
+    else
+        REALITY_FLOW="${REALITY_FLOW:-$REALITY_FLOW_DEFAULT}"
+    fi
+    generate_reality_keys || return 1
+    generate_reality_short_ids || return 1
+}
+
+build_reality_share_link() {
+    local port="${REALITY_PORT:-}"
+    local uuid="${REALITY_UUID:-}"
+    local public_key="${REALITY_PUBLIC_KEY:-}"
+    local short_id="${REALITY_DEFAULT_SHORT_ID:-}"
+    local server_name="${REALITY_SERVER_NAME:-}"
+    local spider_x="${REALITY_SPIDER_X:-/}"
+    local flow="$REALITY_FLOW_DEFAULT"
+    local host link_port endpoint_pair
+    local pbk_uri sni_uri sid_uri spx_uri flow_uri name_uri
+
+    [[ ${REALITY_FLOW+x} ]] && flow="$REALITY_FLOW"
+
+    if [[ -z "$port" && -f "$STATE_FILE" ]]; then
+        port="$(jq -r ".${REALITY_STATE_KEY}.port // empty" "$STATE_FILE" 2>/dev/null)"
+        uuid="$(jq -r ".${REALITY_STATE_KEY}.uuid // empty" "$STATE_FILE" 2>/dev/null)"
+        public_key="$(jq -r ".${REALITY_STATE_KEY}.public_key // empty" "$STATE_FILE" 2>/dev/null)"
+        short_id="$(jq -r ".${REALITY_STATE_KEY}.default_short_id // empty" "$STATE_FILE" 2>/dev/null)"
+        server_name="$(jq -r ".${REALITY_STATE_KEY}.server_name // empty" "$STATE_FILE" 2>/dev/null)"
+        spider_x="$(jq -r ".${REALITY_STATE_KEY}.spider_x // \"/\"" "$STATE_FILE" 2>/dev/null)"
+        flow="$(jq -r ".${REALITY_STATE_KEY}.flow // \"$REALITY_FLOW_DEFAULT\"" "$STATE_FILE" 2>/dev/null)"
+    fi
+
+    [[ -n "$port" && -n "$uuid" && -n "$public_key" && -n "$short_id" && -n "$server_name" ]] || return 1
+    endpoint_pair="$(split_endpoint_for_link "$port")"
+    IFS=$'\t' read -r host link_port <<<"$endpoint_pair"
+    pbk_uri="$(url_encode "$public_key")"
+    sni_uri="$(url_encode "$server_name")"
+    sid_uri="$(url_encode "$short_id")"
+    spx_uri="$(url_encode "$spider_x")"
+    flow_uri="$(url_encode "$flow")"
+    name_uri="$(url_encode "Xray-Reality")"
+
+    printf 'vless://%s@%s:%s?type=tcp&security=reality&pbk=%s&fp=chrome&sni=%s&sid=%s' \
+        "$uuid" "$host" "$link_port" "$pbk_uri" "$sni_uri" "$sid_uri"
+    [[ -n "$flow" ]] && printf '&flow=%s' "$flow_uri"
+    printf '&spx=%s#%s' "$spx_uri" "$name_uri"
+}
+
+state_set_reality() {
+    init_state
+    local tmp link timestamp clients_empty flow
+
+    flow="$REALITY_FLOW_DEFAULT"
+    [[ ${REALITY_FLOW+x} ]] && flow="$REALITY_FLOW"
+    link="$(build_reality_share_link || true)"
+    timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    clients_empty="false"
+    [[ "${REALITY_EMPTY_CLIENTS:-false}" == "true" ]] && clients_empty="true"
+    tmp="$(mktemp)" || return 1
+    MSYS2_ENV_CONV_EXCL="REALITY_JQ_SPIDER_X" REALITY_JQ_SPIDER_X="$REALITY_SPIDER_X" jq --argjson short_ids "$REALITY_SHORT_IDS_JSON" \
+        --arg port "$REALITY_PORT" \
+        --arg defender_port "$REALITY_DEFENDER_PORT" \
+        --arg uuid "$REALITY_UUID" \
+        --arg private_key "$REALITY_PRIVATE_KEY" \
+        --arg public_key "$REALITY_PUBLIC_KEY" \
+        --arg default_short_id "$REALITY_DEFAULT_SHORT_ID" \
+        --arg server_name "$REALITY_SERVER_NAME" \
+        --arg flow "$flow" \
+        --arg created_at "$timestamp" \
+        --arg link "$link" \
+        --arg clients_empty "$clients_empty" '
+        .vless_reality = {
+          "port": ($port|tonumber),
+          "defender_port": ($defender_port|tonumber),
+          "uuid": $uuid,
+          "private_key": $private_key,
+          "public_key": $public_key,
+          "short_ids": $short_ids,
+          "default_short_id": $default_short_id,
+          "server_name": $server_name,
+          "flow": $flow,
+          "spider_x": env.REALITY_JQ_SPIDER_X,
+          "empty_clients": ($clients_empty == "true"),
+          "created_at": $created_at,
+          "link": $link
+        }
+       ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
+    rm -f "$tmp"
+    ensure_config_security
+}
+
+mask_value() {
+    local value="${1:-}"
+    local keep="${2:-4}"
+    local len
+
+    len="${#value}"
+    if [[ -z "$value" ]]; then
+        printf '%s' "(空)"
+    elif ((len <= keep)); then
+        printf '%s' "****"
+    else
+        printf '%s****' "${value:0:keep}"
+    fi
+}
+
+mask_share_link() {
+    local link="$1"
+
+    printf '%s' "$link" |
+        sed -E 's/(pbk=)[^&#]+/\1****/g; s/(sid=)[^&#]+/\1****/g; s/(encryption=)[^&#]+/\1****/g; s/(fm=)[^&#]+/\1****/g'
+}
+
+xray_test_temp_config() {
+    local config_path="$1"
+    local log_file
+
+    [[ -x "$BIN_PATH" ]] || {
+        echo "[i] 未检测到 xray，已跳过临时配置 xray run -test。"
+        return 0
+    }
+    log_file="$(mktemp)" || return 1
+    if "$BIN_PATH" run -test -c "$config_path" >"$log_file" 2>&1; then
+        rm -f "$log_file"
+        echo "[✓] 临时配置 xray run -test 通过"
+        return 0
+    fi
+    echo "[!] 临时配置 xray run -test 未通过，真实配置未被修改。"
+    sed -n '1,80p' "$log_file"
+    rm -f "$log_file"
+    return 0
+}
+
+print_reality_dry_run() {
+    local temp_config="$1"
+    local link
+
+    link="$(build_reality_share_link || true)"
+    echo -e "\n${YELLOW}Reality dry-run 预览${PLAIN}"
+    echo "----------------------------------------"
+    echo "入口端口: ${REALITY_PORT}"
+    echo "Defender: 127.0.0.1:${REALITY_DEFENDER_PORT}"
+    echo "SNI: ${REALITY_SERVER_NAME}"
+    echo "Flow: ${REALITY_FLOW:-无}"
+    echo "ShortID: $(mask_value "$REALITY_DEFAULT_SHORT_ID" 2)"
+    echo "PublicKey: $(mask_value "$REALITY_PUBLIC_KEY" 6)"
+    [[ -n "$link" ]] && echo "Masked Link: $(mask_share_link "$link")"
+    echo "将写入 inbound:"
+    echo "- ${REALITY_TAG}"
+    echo "- ${REALITY_DEFENDER_TAG}"
+    echo "将写入 routing:"
+    echo "- ${REALITY_DEFENDER_TAG} + full:${REALITY_SERVER_NAME} -> direct"
+    echo "- ${REALITY_DEFENDER_TAG} -> ${BLOCK_OUTBOUND_TAG}"
+    jq empty "$temp_config" >/dev/null && echo "[✓] 临时 JSON 结构有效"
+    xray_test_temp_config "$temp_config"
+    echo "不会修改真实配置。"
+}
+
+install_reality() {
+    local tmp clients_json flow config_source base_tmp
+
+    config_source="$CONFIG_FILE"
+    if [[ "${REALITY_DRY_RUN:-false}" == "true" && ! -f "$config_source" ]]; then
+        base_tmp="$(mktemp)" || return 1
+        printf '{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[{"tag":"direct","protocol":"freedom"}],"routing":{"rules":[]}}\n' >"$base_tmp"
+        config_source="$base_tmp"
+    fi
+    if [[ "${REALITY_DRY_RUN:-false}" != "true" ]]; then
+        backup_config || {
+            err "[Reality] 配置备份失败。"
+            return 1
+        }
+    fi
+
+    flow="$REALITY_FLOW_DEFAULT"
+    [[ ${REALITY_FLOW+x} ]] && flow="$REALITY_FLOW"
+    if [[ "${REALITY_EMPTY_CLIENTS:-false}" == "true" ]]; then
+        clients_json='[]'
+    elif [[ -n "$flow" ]]; then
+        clients_json="$(jq -cn --arg uuid "$REALITY_UUID" --arg flow "$flow" '[{"id": $uuid, "flow": $flow, "email": "reality@xray"}]')" || return 1
+    else
+        clients_json="$(jq -cn --arg uuid "$REALITY_UUID" '[{"id": $uuid, "email": "reality@xray"}]')" || return 1
+    fi
+
+    tmp="$(mktemp)" || return 1
+    if ! MSYS2_ENV_CONV_EXCL="REALITY_JQ_SPIDER_X" REALITY_JQ_SPIDER_X="$REALITY_SPIDER_X" jq --arg tag "$REALITY_TAG" \
+        --arg defender_tag "$REALITY_DEFENDER_TAG" \
+        --arg block "$BLOCK_OUTBOUND_TAG" \
+        --arg port "$REALITY_PORT" \
+        --arg defender_port "$REALITY_DEFENDER_PORT" \
+        --arg sni "$REALITY_SERVER_NAME" \
+        --arg private_key "$REALITY_PRIVATE_KEY" \
+        --argjson short_ids "$REALITY_SHORT_IDS_JSON" \
+        --argjson clients "$clients_json" '
+        def has_defender_tag:
+          (((.inboundTag // []) | if type == "array" then any(.[]; . == $defender_tag) else . == $defender_tag end));
+        def reality_rule:
+          (.type == "field") and has_defender_tag;
+        .inbounds = ((.inbounds // []) | map(select(.tag != $tag and .tag != $defender_tag))) |
+        .inbounds += [
+          {
+            "tag": $tag,
+            "listen": "0.0.0.0",
+            "port": ($port|tonumber),
+            "protocol": "vless",
+            "settings": {
+              "clients": $clients,
+              "decryption": "none"
+            },
+            "streamSettings": {
+              "network": "tcp",
+              "security": "reality",
+              "realitySettings": {
+                "dest": ("127.0.0.1:" + $defender_port),
+                "show": false,
+                "xver": 0,
+                "spiderX": env.REALITY_JQ_SPIDER_X,
+                "shortIds": $short_ids,
+                "privateKey": $private_key,
+                "serverNames": [$sni]
+              }
+            },
+            "sniffing": {
+              "enabled": true,
+              "destOverride": ["http", "tls"]
+            }
+          },
+          {
+            "tag": $defender_tag,
+            "listen": "127.0.0.1",
+            "port": ($defender_port|tonumber),
+            "protocol": "dokodemo-door",
+            "settings": {
+              "port": 443,
+              "address": $sni,
+              "network": "tcp"
+            },
+            "sniffing": {
+              "enabled": true,
+              "routeOnly": true,
+              "destOverride": ["tls"]
+            }
+          }
+        ] |
+        .routing = (.routing // {}) |
+        .routing.rules = ([
+          {"type": "field", "inboundTag": [$defender_tag], "domain": ["full:" + $sni], "outboundTag": "direct"},
+          {"type": "field", "inboundTag": [$defender_tag], "outboundTag": $block}
+        ] + ((.routing.rules // []) | map(select((reality_rule) | not))))
+       ' "$config_source" >"$tmp"; then
+        rm -f "$tmp"
+        [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
+        err "[Reality] jq 生成配置失败。"
+        return 1
+    fi
+
+    if [[ "${REALITY_DRY_RUN:-false}" == "true" ]]; then
+        print_reality_dry_run "$tmp"
+        rm -f "$tmp"
+        [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
+        return 0
+    fi
+    [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
+
+    mv "$tmp" "$CONFIG_FILE" || {
+        rm -f "$tmp"
+        err "[Reality] 写入 $CONFIG_FILE 失败。"
+        return 1
+    }
+
+    if ! apply_config "VLESS TCP REALITY"; then
+        err "[Reality] 应用配置失败，已尝试自动回滚。"
+        print_reality_failure_hint
+        return 1
+    fi
+    state_set_reality || err "[状态] Reality 状态写入失败，但 config.json 已生效。"
+    state_set_meta_action "安装 VLESS TCP REALITY" || err "[状态] 最近变更记录失败。"
+    ok "[完成] VLESS TCP REALITY 已写入 Xray 配置。"
+    print_reality_result
+}
+
+print_reality_result() {
+    local missing_mode="${1:-skip}"
+    local state_exists link port defender_port uuid server_name public_key short_id spider_x private_hint flow
+    local endpoint_pair address link_port
+
+    if [[ ! -f "$STATE_FILE" ]]; then
+        [[ "$missing_mode" == "show" ]] && echo "[Reality] 未安装。"
+        return 0
+    fi
+    state_exists="$(jq -r ".${REALITY_STATE_KEY}.uuid // empty" "$STATE_FILE" 2>/dev/null)"
+    if [[ -z "$state_exists" ]]; then
+        [[ "$missing_mode" == "show" ]] && echo "[Reality] 未安装。"
+        return 0
+    fi
+
+    link="$(build_reality_share_link || jq -r ".${REALITY_STATE_KEY}.link // empty" "$STATE_FILE" 2>/dev/null)"
+    port="$(jq -r ".${REALITY_STATE_KEY}.port // empty" "$STATE_FILE" 2>/dev/null)"
+    defender_port="$(jq -r ".${REALITY_STATE_KEY}.defender_port // empty" "$STATE_FILE" 2>/dev/null)"
+    uuid="$(jq -r ".${REALITY_STATE_KEY}.uuid // empty" "$STATE_FILE" 2>/dev/null)"
+    server_name="$(jq -r ".${REALITY_STATE_KEY}.server_name // empty" "$STATE_FILE" 2>/dev/null)"
+    public_key="$(jq -r ".${REALITY_STATE_KEY}.public_key // empty" "$STATE_FILE" 2>/dev/null)"
+    short_id="$(jq -r ".${REALITY_STATE_KEY}.default_short_id // empty" "$STATE_FILE" 2>/dev/null)"
+    spider_x="$(jq -r ".${REALITY_STATE_KEY}.spider_x // \"/\"" "$STATE_FILE" 2>/dev/null)"
+    private_hint="$(jq -r ".${REALITY_STATE_KEY}.private_key // empty" "$STATE_FILE" 2>/dev/null)"
+    flow="$(jq -r ".${REALITY_STATE_KEY}.flow // \"$REALITY_FLOW_DEFAULT\"" "$STATE_FILE" 2>/dev/null)"
+    endpoint_pair="$(split_endpoint_for_link "$port")"
+    IFS=$'\t' read -r address link_port <<<"$endpoint_pair"
+
+    echo -e "\n${YELLOW}--- VLESS TCP REALITY ---${PLAIN}"
+    echo -e "入口端口: ${port}"
+    echo -e "Defender: 127.0.0.1:${defender_port} -> ${server_name}:443"
+    [[ -n "$link" ]] && echo -e "VLESS URL / v2rayN / sing-box 通用链接: ${link}"
+    echo "手动参数:"
+    echo "  Protocol: VLESS"
+    echo "  Transport: TCP"
+    echo "  Security: REALITY"
+    echo "  Address: ${address}"
+    echo "  Port: ${link_port}"
+    echo "  UUID: ${uuid}"
+    echo "  Flow: ${flow:-无}"
+    echo "  SNI: ${server_name}"
+    echo "  PublicKey: ${public_key} (客户端字段)"
+    echo "  ShortID: ${short_id}"
+    echo "  Fingerprint: chrome"
+    echo "  SpiderX: ${spider_x}"
+    [[ -n "$private_hint" ]] && echo "  服务端 privateKey 已保存到 installer-state.json，请妥善保护，默认不显示。"
+    echo "兼容提示:"
+    echo "  - privateKey 是服务端字段，不需要填到客户端。"
+    echo "  - publicKey 是客户端字段。"
+    echo "  - 如果客户端没有 Reality/Vision 选项，说明客户端内核可能太旧。"
+}
+
+remove_reality_config() {
+    local tmp
+
+    [[ -f "$CONFIG_FILE" ]] || {
+        info "[Reality] 未找到配置文件，视为未安装。"
+        state_delete_key "$REALITY_STATE_KEY" 2>/dev/null || true
+        return 0
+    }
+    backup_config || {
+        err "[Reality] 配置备份失败。"
+        return 1
+    }
+
+    tmp="$(mktemp)" || return 1
+    if ! jq --arg tag "$REALITY_TAG" --arg defender_tag "$REALITY_DEFENDER_TAG" '
+        def has_defender_tag:
+          (((.inboundTag // []) | if type == "array" then any(.[]; . == $defender_tag) else . == $defender_tag end));
+        .inbounds = ((.inbounds // []) | map(select(.tag != $tag and .tag != $defender_tag))) |
+        .routing = (.routing // {}) |
+        .routing.rules = ((.routing.rules // []) | map(select((has_defender_tag) | not)))
+       ' "$CONFIG_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        err "[Reality] jq 删除配置失败。"
+        return 1
+    fi
+    mv "$tmp" "$CONFIG_FILE" || {
+        rm -f "$tmp"
+        err "[Reality] 写入 $CONFIG_FILE 失败。"
+        return 1
+    }
+    apply_config "VLESS TCP REALITY 删除" || return 1
+    state_delete_key "$REALITY_STATE_KEY"
+    state_set_meta_action "删除 VLESS TCP REALITY" || err "[状态] 最近变更记录失败。"
+    ok "[完成] VLESS TCP REALITY 已删除。"
+}
+
+random_xhttp_path() {
+    printf '/api/%s' "$(openssl rand -hex 8)"
+}
+
+validate_xhttp_path() {
+    local path="$1"
+
+    [[ "$path" == /* ]] || return 1
+    [[ "$path" != *" "* && "$path" != *"?"* && "$path" != *"#"* && "$path" != *"\\"* ]] || return 1
+    [[ ${#path} -ge 2 && ${#path} -le 128 ]] || return 1
+}
+
+default_finalmask_json() {
+    jq -cn '{
+      tcp: [
+        {
+          type: "fragment",
+          settings: {
+            packets: "tlshello",
+            length: "100-200",
+            delay: "10-20",
+            maxSplit: "3-6"
+          }
+        }
+      ]
+    }'
+}
+
+configure_vless_xhttp_finalmask() {
+    local mode="${1:-interactive}"
+    local input port
+
+    if [[ "$mode" != "dry-run" ]]; then
+        install_or_update_xray || return 1
+    fi
+
+    VLESS_MODE="${VLESS_MODE:-basic}"
+    VLESS_ENC_METHOD="${VLESS_ENC_METHOD:-native}"
+    VLESS_CLIENT_RTT="${VLESS_CLIENT_RTT:-0rtt}"
+    VLESS_SERVER_TICKET="${VLESS_SERVER_TICKET:-600s}"
+    VLESS_AUTH="${VLESS_AUTH:-x25519}"
+
+    if [[ "$mode" == "interactive" ]]; then
+        echo -e "\n${YELLOW}[配置] VLESS Encryption + XHTTP + FinalMask${PLAIN}"
+        echo -e "  1) 基础模式 ${GREEN}(X25519/native/0rtt/600s)${PLAIN}"
+        echo "  2) 高级模式 (认证、外观混淆、RTT、ticket)"
+        read -r -p "选项 (默认: 1): " input
+        if [[ "${input:-1}" == "2" ]]; then
+            VLESS_MODE="advanced"
+            configure_vless_advanced_options
+        fi
+        ask_vless_auth
+
+        while true; do
+            read -r -p "XHTTP 入口端口 (回车随机 20000-50000): " input
+            if [[ -z "$input" ]]; then
+                port="$(random_free_port 20000 50000)" || return 1
+                info "[XHTTP] 随机选择端口: ${port}"
+                XHTTP_PORT="$port"
+                break
+            fi
+            if validate_port "$input" && ! port_used_in_config "$input" && check_port "$input"; then
+                XHTTP_PORT="$input"
+                break
+            fi
+            err "[XHTTP] 端口无效、被占用或已存在于 config.json。"
+        done
+
+        read -r -p "XHTTP path (回车随机): " input
+        XHTTP_PATH="${input:-$(random_xhttp_path)}"
+        read -r -p "开启 FinalMask? [Y/n]: " input
+        case "${input,,}" in
+            n | no) XHTTP_FINALMASK_ENABLED="false" ;;
+            *) XHTTP_FINALMASK_ENABLED="true" ;;
+        esac
+    else
+        if [[ -n "${XHTTP_PORT_REQUEST:-}" ]]; then
+            validate_port "$XHTTP_PORT_REQUEST" || {
+                err "[XHTTP] 端口无效: $XHTTP_PORT_REQUEST"
+                return 1
+            }
+            if port_used_in_config "$XHTTP_PORT_REQUEST" || ! check_port "$XHTTP_PORT_REQUEST"; then
+                err "[XHTTP] 端口已被占用或已存在于 config.json: $XHTTP_PORT_REQUEST"
+                return 1
+            fi
+            XHTTP_PORT="$XHTTP_PORT_REQUEST"
+        else
+            XHTTP_PORT="$(random_free_port 20000 50000)" || return 1
+        fi
+        XHTTP_PATH="${XHTTP_PATH_REQUEST:-$(random_xhttp_path)}"
+        XHTTP_FINALMASK_ENABLED="${XHTTP_FINALMASK_REQUEST:-true}"
+    fi
+
+    validate_xhttp_path "$XHTTP_PATH" || {
+        err "[XHTTP] path 无效，必须以 / 开头，长度不超过 128，且不能包含空格、?、# 或反斜杠。"
+        return 1
+    }
+    case "${XHTTP_FINALMASK_ENABLED,,}" in
+        true | on | yes | y | 1) XHTTP_FINALMASK_ENABLED="true" ;;
+        false | off | no | n | 0) XHTTP_FINALMASK_ENABLED="false" ;;
+        *)
+            err "[XHTTP] finalmask 参数必须为 on/off。"
+            return 1
+            ;;
+    esac
+
+    XHTTP_FINALMASK_JSON="$(default_finalmask_json)" || return 1
+    VLESS_UUID="$(generate_uuid)" || return 1
+    generate_vless_encryption_pair "$VLESS_AUTH" || return 1
+}
+
+encode_finalmask_for_share_link() {
+    local finalmask_json="$1"
+
+    json_url_encode "$finalmask_json"
+}
+
+build_vless_xhttp_finalmask_share_link() {
+    local port="${XHTTP_PORT:-}"
+    local path="${XHTTP_PATH:-}"
+    local uuid="${VLESS_UUID:-}"
+    local encryption="${VLESS_ENCRYPTION:-}"
+    local finalmask_enabled="${XHTTP_FINALMASK_ENABLED:-}"
+    local finalmask_json="${XHTTP_FINALMASK_JSON:-}"
+    local host link_port endpoint_pair enc_uri path_uri fm_uri name_uri
+
+    if [[ -z "$port" && -f "$STATE_FILE" ]]; then
+        port="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.port // empty" "$STATE_FILE" 2>/dev/null)"
+        path="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.path // empty" "$STATE_FILE" 2>/dev/null)"
+        uuid="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.uuid // empty" "$STATE_FILE" 2>/dev/null)"
+        encryption="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.encryption // empty" "$STATE_FILE" 2>/dev/null)"
+        finalmask_enabled="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
+        finalmask_json="$(jq -c ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_json // empty" "$STATE_FILE" 2>/dev/null)"
+    fi
+
+    [[ -n "$port" && -n "$path" && -n "$uuid" && -n "$encryption" ]] || return 1
+    endpoint_pair="$(split_endpoint_for_link "$port")"
+    IFS=$'\t' read -r host link_port <<<"$endpoint_pair"
+    enc_uri="$(url_encode "$encryption")"
+    path_uri="$(url_encode "$path")"
+    name_uri="$(url_encode "Xray-XHTTP-FinalMask")"
+
+    printf 'vless://%s@%s:%s?type=xhttp&security=none&path=%s&encryption=%s' \
+        "$uuid" "$host" "$link_port" "$path_uri" "$enc_uri"
+    if [[ "${finalmask_enabled,,}" == "true" && -n "$finalmask_json" && "$finalmask_json" != "null" ]]; then
+        fm_uri="$(encode_finalmask_for_share_link "$finalmask_json")" || return 1
+        printf '&fm=%s' "$fm_uri"
+    fi
+    printf '#%s' "$name_uri"
+}
+
+state_set_vless_xhttp_finalmask() {
+    init_state
+    local tmp link timestamp finalmask_json
+
+    link="$(build_vless_xhttp_finalmask_share_link || true)"
+    timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    finalmask_json="null"
+    if [[ "$XHTTP_FINALMASK_ENABLED" == "true" ]]; then
+        finalmask_json="$XHTTP_FINALMASK_JSON"
+    fi
+
+    tmp="$(mktemp)" || return 1
+    MSYS2_ENV_CONV_EXCL="XHTTP_JQ_VALUE" XHTTP_JQ_VALUE="$XHTTP_PATH" jq --arg port "$XHTTP_PORT" \
+        --arg uuid "$VLESS_UUID" \
+        --arg decryption "$VLESS_DECRYPTION" \
+        --arg encryption "$VLESS_ENCRYPTION" \
+        --arg auth "$VLESS_AUTH" \
+        --arg enc_method "$VLESS_ENC_METHOD" \
+        --arg client_rtt "$VLESS_CLIENT_RTT" \
+        --arg server_ticket "$VLESS_SERVER_TICKET" \
+        --arg finalmask_enabled "$XHTTP_FINALMASK_ENABLED" \
+        --argjson finalmask_json "$finalmask_json" \
+        --arg created_at "$timestamp" \
+        --arg link "$link" '
+        .vless_xhttp_finalmask = {
+          "port": ($port|tonumber),
+          "path": env.XHTTP_JQ_VALUE,
+          "uuid": $uuid,
+          "decryption": $decryption,
+          "encryption": $encryption,
+          "auth": $auth,
+          "enc_method": $enc_method,
+          "client_rtt": $client_rtt,
+          "server_ticket": $server_ticket,
+          "finalmask_enabled": ($finalmask_enabled == "true"),
+          "finalmask_json": $finalmask_json,
+          "created_at": $created_at,
+          "link": $link
+        }
+       ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
+    rm -f "$tmp"
+    ensure_config_security
+}
+
+print_xhttp_dry_run() {
+    local temp_config="$1"
+    local link fm_state
+
+    link="$(build_vless_xhttp_finalmask_share_link || true)"
+    fm_state="off"
+    [[ "${XHTTP_FINALMASK_ENABLED:-false}" == "true" ]] && fm_state="on"
+    echo -e "\n${YELLOW}XHTTP-FinalMask dry-run 预览${PLAIN}"
+    echo "----------------------------------------"
+    echo "入口端口: ${XHTTP_PORT}"
+    echo "Path: ${XHTTP_PATH}"
+    echo "FinalMask: ${fm_state}"
+    [[ -n "$link" ]] && echo "Masked Link: $(mask_share_link "$link")"
+    echo "将写入 inbound:"
+    echo "- ${VLESS_XHTTP_FM_TAG}"
+    jq empty "$temp_config" >/dev/null && echo "[✓] 临时 JSON 结构有效"
+    xray_test_temp_config "$temp_config"
+    echo "不会修改真实配置。"
+}
+
+install_vless_xhttp_finalmask() {
+    local tmp finalmask_json config_source base_tmp
+
+    config_source="$CONFIG_FILE"
+    if [[ "${XHTTP_DRY_RUN:-false}" == "true" && ! -f "$config_source" ]]; then
+        base_tmp="$(mktemp)" || return 1
+        printf '{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[{"tag":"direct","protocol":"freedom"}],"routing":{"rules":[]}}\n' >"$base_tmp"
+        config_source="$base_tmp"
+    fi
+    if [[ "${XHTTP_DRY_RUN:-false}" != "true" ]]; then
+        backup_config || {
+            err "[XHTTP] 配置备份失败。"
+            return 1
+        }
+    fi
+    finalmask_json="null"
+    [[ "$XHTTP_FINALMASK_ENABLED" == "true" ]] && finalmask_json="$XHTTP_FINALMASK_JSON"
+
+    tmp="$(mktemp)" || return 1
+    if ! MSYS2_ENV_CONV_EXCL="XHTTP_JQ_VALUE" XHTTP_JQ_VALUE="$XHTTP_PATH" jq --arg tag "$VLESS_XHTTP_FM_TAG" \
+        --arg port "$XHTTP_PORT" \
+        --arg uuid "$VLESS_UUID" \
+        --arg decryption "$VLESS_DECRYPTION" \
+        --argjson finalmask_json "$finalmask_json" \
+        --arg finalmask_enabled "$XHTTP_FINALMASK_ENABLED" '
+        .inbounds = ((.inbounds // []) | map(select(.tag != $tag))) |
+        .inbounds += [({
+          "tag": $tag,
+          "listen": "0.0.0.0",
+          "port": ($port|tonumber),
+          "protocol": "vless",
+          "settings": {
+            "clients": [
+              {
+                "id": $uuid,
+                "email": "xhttp-finalmask@xray"
+              }
+            ],
+            "decryption": $decryption
+          },
+          "streamSettings": {
+            "network": "xhttp",
+            "security": "none",
+            "xhttpSettings": {
+              "path": env.XHTTP_JQ_VALUE
+            }
+          },
+          "sniffing": {
+            "enabled": true,
+            "destOverride": ["http", "tls"]
+          }
+        } | if $finalmask_enabled == "true" then
+          .streamSettings.finalmask = $finalmask_json
+        else
+          .
+        end)]
+       ' "$config_source" >"$tmp"; then
+        rm -f "$tmp"
+        [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
+        err "[XHTTP] jq 生成配置失败。"
+        return 1
+    fi
+
+    if [[ "${XHTTP_DRY_RUN:-false}" == "true" ]]; then
+        print_xhttp_dry_run "$tmp"
+        rm -f "$tmp"
+        [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
+        return 0
+    fi
+    [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
+
+    mv "$tmp" "$CONFIG_FILE" || {
+        rm -f "$tmp"
+        err "[XHTTP] 写入 $CONFIG_FILE 失败。"
+        return 1
+    }
+
+    if ! apply_config "VLESS Encryption + XHTTP + FinalMask"; then
+        if [[ "$XHTTP_FINALMASK_ENABLED" == "true" ]]; then
+            err "[XHTTP] FinalMask 模板未通过 Xray 校验，可使用 --finalmask off 重试。"
+        fi
+        print_xhttp_failure_hint
+        return 1
+    fi
+    state_set_vless_xhttp_finalmask || err "[状态] XHTTP-FinalMask 状态写入失败，但 config.json 已生效。"
+    state_set_meta_action "安装 VLESS Encryption + XHTTP + FinalMask" || err "[状态] 最近变更记录失败。"
+    ok "[完成] VLESS Encryption + XHTTP + FinalMask 已写入 Xray 配置。"
+    print_vless_xhttp_finalmask_result
+}
+
+print_vless_xhttp_finalmask_result() {
+    local missing_mode="${1:-skip}"
+    local state_exists link port path uuid encryption auth enc_method rtt ticket fm_enabled fm_json endpoint_pair
+    local address link_port
+
+    if [[ ! -f "$STATE_FILE" ]]; then
+        [[ "$missing_mode" == "show" ]] && echo "[XHTTP-FinalMask] 未安装。"
+        return 0
+    fi
+    state_exists="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.uuid // empty" "$STATE_FILE" 2>/dev/null)"
+    if [[ -z "$state_exists" ]]; then
+        [[ "$missing_mode" == "show" ]] && echo "[XHTTP-FinalMask] 未安装。"
+        return 0
+    fi
+
+    link="$(build_vless_xhttp_finalmask_share_link || jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.link // empty" "$STATE_FILE" 2>/dev/null)"
+    port="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.port // empty" "$STATE_FILE" 2>/dev/null)"
+    path="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.path // empty" "$STATE_FILE" 2>/dev/null)"
+    uuid="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.uuid // empty" "$STATE_FILE" 2>/dev/null)"
+    encryption="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.encryption // empty" "$STATE_FILE" 2>/dev/null)"
+    auth="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.auth // empty" "$STATE_FILE" 2>/dev/null)"
+    enc_method="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.enc_method // empty" "$STATE_FILE" 2>/dev/null)"
+    rtt="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.client_rtt // empty" "$STATE_FILE" 2>/dev/null)"
+    ticket="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.server_ticket // empty" "$STATE_FILE" 2>/dev/null)"
+    fm_enabled="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
+    fm_json="$(jq -c ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_json // empty" "$STATE_FILE" 2>/dev/null)"
+    endpoint_pair="$(split_endpoint_for_link "$port")"
+    IFS=$'\t' read -r address link_port <<<"$endpoint_pair"
+
+    echo -e "\n${YELLOW}--- VLESS Encryption + XHTTP + FinalMask ---${PLAIN}"
+    echo -e "入口端口: ${port}"
+    echo -e "Path: ${path}"
+    if [[ "$fm_enabled" == "true" ]]; then
+        echo -e "FinalMask: on"
+    else
+        echo -e "FinalMask: off（未启用 FinalMask）"
+    fi
+    [[ -n "$link" ]] && echo -e "VLESS URL: ${link}"
+    if [[ ${#link} -gt 1800 ]]; then
+        info "[XHTTP] FinalMask 链接较长，部分客户端可能需要手动填写参数。"
+    fi
+    echo "手动参数:"
+    echo "  Protocol: VLESS"
+    echo "  Transport: XHTTP"
+    echo "  Security: none"
+    echo "  Address: ${address}"
+    echo "  Port: ${link_port}"
+    echo "  UUID: ${uuid}"
+    echo "  VLESS Encryption: ${encryption}"
+    echo "  Path: ${path}"
+    echo "  FinalMask: ${fm_enabled}"
+    echo "  Auth: ${auth}"
+    echo "  EncMethod: ${enc_method}"
+    echo "  ClientRTT: ${rtt}"
+    echo "  ServerTicket: ${ticket}"
+    if [[ "$fm_enabled" == "true" && -n "$fm_json" && "$fm_json" != "null" ]]; then
+        if [[ ${#fm_json} -gt 1200 ]]; then
+            echo "  FinalMask JSON: 内容较长，可用 ike export clients 查看。"
+        else
+            echo "  FinalMask JSON: ${fm_json}"
+        fi
+    fi
+    echo "兼容提示:"
+    echo "  - XHTTP + FinalMask 需要较新的客户端核心。"
+    echo "  - 如果导入失败，先尝试: ike xhttp install --finalmask off"
+}
+
+remove_vless_xhttp_finalmask_config() {
+    local tmp
+
+    [[ -f "$CONFIG_FILE" ]] || {
+        info "[XHTTP] 未找到配置文件，视为未安装。"
+        state_delete_key "$VLESS_XHTTP_FM_STATE_KEY" 2>/dev/null || true
+        return 0
+    }
+    backup_config || {
+        err "[XHTTP] 配置备份失败。"
+        return 1
+    }
+
+    tmp="$(mktemp)" || return 1
+    if ! jq --arg tag "$VLESS_XHTTP_FM_TAG" '
+        .inbounds = ((.inbounds // []) | map(select(.tag != $tag)))
+       ' "$CONFIG_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        err "[XHTTP] jq 删除配置失败。"
+        return 1
+    fi
+    mv "$tmp" "$CONFIG_FILE" || {
+        rm -f "$tmp"
+        err "[XHTTP] 写入 $CONFIG_FILE 失败。"
+        return 1
+    }
+    apply_config "VLESS XHTTP-FinalMask 删除" || return 1
+    state_delete_key "$VLESS_XHTTP_FM_STATE_KEY"
+    state_set_meta_action "删除 VLESS Encryption + XHTTP + FinalMask" || err "[状态] 最近变更记录失败。"
+    ok "[完成] VLESS Encryption + XHTTP + FinalMask 已删除。"
+}
+
 install_socks5() {
     echo -e "\n${YELLOW}[配置] SOCKS5 参数:${PLAIN}"
     ask_port "SOCKS5 端口" "1080" S_PORT
@@ -1500,6 +3020,7 @@ ensure_default_safety_blocks() {
     }
 
     if ! jq --arg block "$BLOCK_OUTBOUND_TAG" \
+        --arg reality_defender "$REALITY_DEFENDER_TAG" \
         --arg tunnel_prefix "$TUNNEL_TAG_PREFIX" \
         --arg legacy_prefix "$LEGACY_FORWARD_TAG_PREFIX" \
         --arg ports "$DEFAULT_SAFETY_BLOCK_PORTS" \
@@ -1519,6 +3040,9 @@ ensure_default_safety_blocks() {
           (.type == "field") and
           (.outboundTag == "direct") and
           (((.inboundTag // []) | if type == "array" then any(.[]; startswith($tunnel_prefix) or startswith($legacy_prefix)) else false end));
+        def reality_defender_rule:
+          (.type == "field") and
+          (((.inboundTag // []) | if type == "array" then any(.[]; . == $reality_defender) else . == $reality_defender end));
 
         .outbounds = (.outbounds // []) |
         if ((.outbounds | map(select(.tag == $block)) | length) > 0) then
@@ -1528,11 +3052,11 @@ ensure_default_safety_blocks() {
         end |
         .routing = (.routing // {}) |
         .routing.rules = (
-        ((.routing.rules // []) | map(select(forward_relay_rule))) + [
+        ((.routing.rules // []) | map(select(forward_relay_rule or reality_defender_rule))) + [
           {"type": "field", "protocol": ["bittorrent"], "outboundTag": $block},
           private_rule,
           {"type": "field", "port": $ports, "outboundTag": $block}
-        ] + ((.routing.rules // []) | map(select((default_safety_rule or forward_relay_rule) | not))))
+        ] + ((.routing.rules // []) | map(select((default_safety_rule or forward_relay_rule or reality_defender_rule) | not))))
       ' "$CONFIG_FILE" >"$tmp"; then
         rm -f "$tmp"
         err "[失败] [安全] 写入默认安全屏蔽规则失败。"
@@ -1943,6 +3467,36 @@ xray_service_status() {
     else
         printf '%s' "未检测到 systemd/openrc"
     fi
+}
+
+print_apply_failure_hint() {
+    local scope="${1:-proxy}"
+
+    err "[建议] 可先执行: ike doctor ${scope}"
+    err "[建议] 可再执行: ike smoke ${scope}"
+    err "[建议] 查看最近日志: journalctl -u xray -n 80 --no-pager"
+}
+
+print_finalmask_failure_hint() {
+    err "[建议] FinalMask 仍属实验能力；如校验或客户端导入失败，优先重试: ike xhttp install --finalmask off"
+    err "[建议] 检查当前 Xray-core 版本是否支持所用 XHTTP/FinalMask schema。"
+}
+
+print_reality_failure_hint() {
+    err "[Reality] 修复建议:"
+    err "  - 检查 SNI 是否为纯域名且 DOMAIN:443 可达。"
+    err "  - 检查入口端口和 defender 端口是否被占用。"
+    print_apply_failure_hint "reality"
+}
+
+print_xhttp_failure_hint() {
+    err "[XHTTP] 修复建议:"
+    err "  - 检查 path 是否以 / 开头，且不含空格、?、# 或反斜杠。"
+    err "  - 检查 xray-core 版本是否支持 VLESS Encryption / XHTTP / FinalMask。"
+    if [[ "${XHTTP_FINALMASK_ENABLED:-false}" == "true" ]]; then
+        print_finalmask_failure_hint
+    fi
+    print_apply_failure_hint "xhttp"
 }
 
 random_short_suffix() {
@@ -3510,6 +5064,9 @@ list_managed_ports() {
     printf '%-8s %-12s %s\n' "端口" "类型" "监听"
     jq -r --arg ss "$SS_TAG" \
         --arg vless "$VLESS_TAG" \
+        --arg reality "$REALITY_TAG" \
+        --arg reality_defender "$REALITY_DEFENDER_TAG" \
+        --arg xhttp "$VLESS_XHTTP_FM_TAG" \
         --arg socks "$SOCKS_TAG" \
         --arg tunnel_prefix "$TUNNEL_TAG_PREFIX" \
         --arg legacy_prefix "$LEGACY_FORWARD_TAG_PREFIX" '
@@ -3520,6 +5077,9 @@ list_managed_ports() {
         select(
           .tag == $ss or
           .tag == $vless or
+          .tag == $reality or
+          .tag == $reality_defender or
+          .tag == $xhttp or
           .tag == $socks or
           managed_tag
         ) |
@@ -3527,6 +5087,9 @@ list_managed_ports() {
           (.port | tostring),
           (if .tag == $ss then "SS2022"
            elif .tag == $vless then "VLESS"
+           elif .tag == $reality then "Reality"
+           elif .tag == $reality_defender then "Reality-Def"
+           elif .tag == $xhttp then "XHTTP-FM"
            elif .tag == $socks then "SOCKS5"
            else "Tunnel" end),
           (if managed_tag then .tag else (.listen // "0.0.0.0") end)
@@ -4197,6 +5760,9 @@ view_config() {
         fi
     fi
 
+    print_reality_result
+    print_vless_xhttp_finalmask_result
+
     local socks_in sp su sw
     socks_in="$(jq -c --arg tag "$SOCKS_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" 2>/dev/null)"
     if [[ -n "$socks_in" ]]; then
@@ -4364,6 +5930,8 @@ installed_protocols_summary() {
     if [[ -f "$CONFIG_FILE" ]] && command -v jq >/dev/null 2>&1 && jq empty "$CONFIG_FILE" >/dev/null 2>&1; then
         jq -e --arg tag "$SS_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("SS2022")
         jq -e --arg tag "$VLESS_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("VLESS Encryption")
+        jq -e --arg tag "$REALITY_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("Reality")
+        jq -e --arg tag "$VLESS_XHTTP_FM_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("XHTTP-FinalMask")
         jq -e --arg tag "$SOCKS_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("SOCKS5")
     fi
 
@@ -4383,9 +5951,11 @@ uninstall() {
     echo -e "\n${YELLOW}[卸载] 选择:${PLAIN}"
     echo " 1) 删除 SS2022 配置"
     echo " 2) 删除 VLESS Encryption 配置"
-    echo " 3) 删除 SOCKS5 配置"
-    echo " 4) 卸载全部 Xray"
-    echo " 5) 清理旧 sing-box 残留"
+    echo " 3) 删除 VLESS TCP REALITY 配置"
+    echo " 4) 删除 VLESS Encryption + XHTTP + FinalMask 配置"
+    echo " 5) 删除 SOCKS5 配置"
+    echo " 6) 卸载全部 Xray"
+    echo " 7) 清理旧 sing-box 残留"
     read -r -p "选项: " OPT
 
     case "$OPT" in
@@ -4401,11 +5971,17 @@ uninstall() {
             ok "[完成] VLESS Encryption 已删除。"
             ;;
         3)
+            remove_reality_config
+            ;;
+        4)
+            remove_vless_xhttp_finalmask_config
+            ;;
+        5)
             remove_inbound "$SOCKS_TAG"
             apply_config
             ok "[完成] SOCKS5 已删除。"
             ;;
-        4)
+        6)
             read -r -p "确认卸载 Xray、配置和快捷命令? [y/N]: " CONFIRM
             [[ "$CONFIRM" =~ ^[yY]$ ]] || return 0
             stop_service
@@ -4421,7 +5997,7 @@ uninstall() {
             ok "[完成] Xray 已彻底卸载。"
             exit 0
             ;;
-        5)
+        7)
             cleanup_legacy_singbox
             ;;
         *)
@@ -4465,7 +6041,9 @@ render_menu() {
     echo -e "${GREEN}11.${PLAIN} 开启/关闭增强安全屏蔽"
     echo -e "${GREEN}12.${PLAIN} 导出当前配置备份"
     echo -e "${GREEN}13.${PLAIN} Tunnel 中转管理"
-    echo -e "${GREEN}14.${PLAIN} 退出"
+    echo -e "${GREEN}14.${PLAIN} 安装 VLESS TCP REALITY"
+    echo -e "${GREEN}15.${PLAIN} 安装 VLESS Encryption + XHTTP + FinalMask"
+    echo -e "${GREEN}16.${PLAIN} 退出"
     echo -e "----------------------------------------------"
 }
 
@@ -4474,7 +6052,7 @@ show_menu() {
 
     while true; do
         render_menu
-        read -r -p "请输入选项 [1-14]: " MENU_CHOICE || exit 0
+        read -r -p "请输入选项 [1-16]: " MENU_CHOICE || exit 0
 
         case "$MENU_CHOICE" in
             1)
@@ -4535,7 +6113,17 @@ show_menu() {
             13)
                 configure_forward_menu || err "[失败] Tunnel 中转管理未完成，请查看上方错误信息。"
                 ;;
-            14) exit 0 ;;
+            14)
+                if ! { prepare_system && configure_reality "interactive" && install_reality; }; then
+                    err "[失败] VLESS TCP REALITY 安装未完成，请查看上方错误信息。"
+                fi
+                ;;
+            15)
+                if ! { prepare_system && configure_vless_xhttp_finalmask "interactive" && install_vless_xhttp_finalmask; }; then
+                    err "[失败] VLESS Encryption + XHTTP + FinalMask 安装未完成，请查看上方错误信息。"
+                fi
+                ;;
+            16) exit 0 ;;
             *) err "错误选项。" ;;
         esac
 
@@ -4546,6 +6134,7 @@ show_menu() {
 run_view_command() {
     local mode="$LINK_VIEW_MODE"
     local detail="quick"
+    local protocol=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -4555,6 +6144,12 @@ run_view_command() {
             ipv4 | ipv6 | dual)
                 mode="$1"
                 ;;
+            reality)
+                protocol="reality"
+                ;;
+            xhttp)
+                protocol="xhttp"
+                ;;
             *)
                 err "[失败] 未知 view 参数: $1"
                 echo "用法: ike view [ipv4|ipv6|dual] [doctor]"
@@ -4563,6 +6158,26 @@ run_view_command() {
         esac
         shift
     done
+
+    if [[ -n "$protocol" ]]; then
+        init_state
+        if [[ "$detail" == "doctor" ]]; then
+            get_public_addresses
+        else
+            get_local_addresses
+        fi
+        host_candidates "$mode"
+        case "$protocol" in
+            reality)
+                print_reality_result "show"
+                ;;
+            xhttp)
+                print_vless_xhttp_finalmask_result "show"
+                ;;
+        esac
+        show_footer
+        return 0
+    fi
 
     view_config "$mode" "$detail"
 }
@@ -4693,24 +6308,43 @@ run_config_command() {
 
 run_service_command() {
     local action="${1:-status}"
+    local assume_yes="false"
+
+    shift || true
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --yes | -y)
+                assume_yes="true"
+                ;;
+            *)
+                err "[失败] 未知 service 参数: $1"
+                echo "用法: ike service install|status|restart|logs|repair [--yes]"
+                return 1
+                ;;
+        esac
+        shift
+    done
 
     case "$action" in
+        install)
+            ensure_xray_service "$assume_yes"
+            ;;
         status | "")
-            if [[ "$INIT_SYSTEM" == "systemd" ]] && command -v systemctl >/dev/null 2>&1; then
-                systemctl status "$SERVICE_NAME" --no-pager
-            elif [[ "$INIT_SYSTEM" == "openrc" ]] && command -v rc-service >/dev/null 2>&1; then
-                rc-service "$SERVICE_NAME" status
-            else
-                err "[服务] 未检测到 systemd/openrc，无法读取服务状态。"
-                return 1
-            fi
+            status_xray_service
             ;;
         restart)
-            restart_service
+            restart_xray_service
+            ;;
+        logs)
+            run_logs_command
+            ;;
+        repair)
+            ensure_xray_service "$assume_yes"
+            validate_config_file
             ;;
         *)
             err "[失败] 未知 service 参数: $action"
-            echo "用法: ike service status|restart"
+            echo "用法: ike service install|status|restart|logs|repair"
             return 1
             ;;
     esac
@@ -4718,12 +6352,13 @@ run_service_command() {
 
 run_logs_command() {
     if [[ "$INIT_SYSTEM" == "systemd" ]] && command -v journalctl >/dev/null 2>&1; then
-        journalctl -u "$SERVICE_NAME" -e --no-pager
+        journalctl -u "$SERVICE_NAME" -n 80 --no-pager 2>&1 | redact_sensitive_stream
+        return "${PIPESTATUS[0]}"
     elif [[ "$INIT_SYSTEM" == "openrc" ]]; then
-        if [[ -f /var/log/xray/access.log || -f /var/log/xray/error.log ]]; then
-            tail -n 200 /var/log/xray/access.log /var/log/xray/error.log 2>/dev/null || true
+        if [[ -f "$(log_dir_path)/access.log" || -f "$(log_dir_path)/error.log" ]]; then
+            tail -n 200 "$(log_dir_path)/access.log" "$(log_dir_path)/error.log" 2>/dev/null || true
         else
-            err "[日志] 未找到 /var/log/xray/access.log 或 /var/log/xray/error.log。"
+            err "[日志] 未找到 $(log_dir_path)/access.log 或 $(log_dir_path)/error.log。"
             return 1
         fi
     else
@@ -4906,6 +6541,1032 @@ run_tunnel_command() {
     esac
 }
 
+diag_ok() { echo "[✓] $*"; }
+diag_warn() { echo "[!] $*"; }
+diag_fail() { echo "[✗] $*"; }
+diag_info() { echo "[i] $*"; }
+
+redact_sensitive_stream() {
+    sed -E \
+        -e 's/("(privateKey|private_key|decryption|password|pass|token|secret)"[[:space:]]*:[[:space:]]*")[^"]*/\1***REDACTED***/Ig' \
+        -e 's/((privateKey|private_key|decryption|password|pass|token|secret|method secret)[[:space:]]*[=:][[:space:]]*)[^[:space:],;]+/\1***REDACTED***/Ig'
+}
+
+inbound_exists() {
+    local tag="$1"
+    [[ -f "$CONFIG_FILE" ]] && command -v jq >/dev/null 2>&1 &&
+        jq -e --arg tag "$tag" 'any(.inbounds[]?; .tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1
+}
+
+port_listening() {
+    local port="$1"
+
+    command -v ss >/dev/null 2>&1 || return 2
+    ss -tulpn 2>/dev/null | grep -qE "[:.]${port}[[:space:]]"
+}
+
+port_listening_localhost() {
+    local port="$1"
+
+    command -v ss >/dev/null 2>&1 || return 2
+    ss -tulpn 2>/dev/null | grep -qE "(127\.0\.0\.1|::1|\[::1\])[:.]${port}[[:space:]]"
+}
+
+doctor_reality_config() {
+    [[ -f "$CONFIG_FILE" ]] && diag_ok "config.json 存在" || diag_fail "config.json 不存在"
+    [[ -x "$BIN_PATH" ]] && diag_ok "xray 二进制存在" || diag_warn "xray 二进制不存在: $BIN_PATH"
+    command -v systemctl >/dev/null 2>&1 && diag_ok "systemctl 存在" || diag_warn "systemctl 不存在或当前系统未使用 systemd"
+    command -v ss >/dev/null 2>&1 && diag_ok "ss 存在" || diag_warn "ss 不存在，端口监听检查将降级"
+    command -v jq >/dev/null 2>&1 && diag_ok "jq 存在" || diag_fail "jq 不存在"
+    command -v openssl >/dev/null 2>&1 && diag_ok "openssl 存在" || diag_warn "openssl 不存在，SNI TLS 探测不可用"
+}
+
+doctor_reality_routing() {
+    local sni="$1"
+
+    if jq -e --arg defender "$REALITY_DEFENDER_TAG" --arg sni "$sni" --arg block "$BLOCK_OUTBOUND_TAG" '
+      .routing.rules as $rules |
+      ($rules | map((.inboundTag // []) == [$defender] and (.domain // []) == ["full:" + $sni] and (.outboundTag == "direct" or .outboundTag == "DIRECT")) | index(true)) as $direct |
+      ($rules | map((.inboundTag // []) == [$defender] and .outboundTag == $block) | index(true)) as $block_idx |
+      ($direct != null and $block_idx != null and $direct < $block_idx)
+    ' "$CONFIG_FILE" >/dev/null 2>&1; then
+        diag_ok "Reality routing 顺序正确"
+    else
+        diag_fail "Reality routing 顺序异常，full:SNI -> direct 必须在 defender -> BLOCK 前面"
+    fi
+}
+
+doctor_reality_port() {
+    local port="$1"
+    local defender_port="$2"
+
+    if port_listening "$port"; then
+        diag_ok "Reality 主端口正在监听: ${port}"
+    elif [[ $? -eq 2 ]]; then
+        diag_warn "未找到 ss，跳过 Reality 主端口监听检查"
+    else
+        diag_warn "Reality 主端口未监听: ${port}；如服务未运行，请执行 systemctl restart xray"
+    fi
+
+    if port_listening_localhost "$defender_port"; then
+        diag_ok "Reality defender 端口仅本地监听: 127.0.0.1:${defender_port}"
+    elif [[ $? -eq 2 ]]; then
+        diag_warn "未找到 ss，跳过 defender 端口监听检查"
+    else
+        diag_warn "Reality defender 端口未检测到 127.0.0.1 监听: ${defender_port}"
+    fi
+}
+
+doctor_reality_state() {
+    if [[ ! -f "$STATE_FILE" ]]; then
+        diag_warn "installer-state.json 不存在"
+        return 0
+    fi
+    jq -e ".${REALITY_STATE_KEY}.port and .${REALITY_STATE_KEY}.defender_port and .${REALITY_STATE_KEY}.uuid and .${REALITY_STATE_KEY}.public_key and .${REALITY_STATE_KEY}.default_short_id and .${REALITY_STATE_KEY}.server_name and .${REALITY_STATE_KEY}.flow and .${REALITY_STATE_KEY}.link" "$STATE_FILE" >/dev/null 2>&1 &&
+        diag_ok "Reality state 字段完整" ||
+        diag_warn "Reality state 字段不完整，可重新执行 ike reality install"
+}
+
+doctor_reality_sni() {
+    local sni="$1"
+
+    if validate_reality_sni "$sni"; then
+        diag_ok "SNI 格式合理"
+    else
+        diag_fail "SNI 格式异常: ${sni}"
+    fi
+    if env_truthy "${XRAY_ONECLICK_DOCTOR_TLS:-}"; then
+        if test_reality_target_tls "$sni"; then
+            diag_ok "SNI TLS 探测通过: ${sni}:443"
+        else
+            diag_warn "SNI TLS 探测失败，建议更换域名或稍后重试"
+        fi
+    else
+        diag_info "如需探测 SNI TLS，可执行: XRAY_ONECLICK_DOCTOR_TLS=1 ike doctor reality"
+    fi
+}
+
+doctor_reality_output() {
+    local public_key short_id sni
+
+    public_key="$(jq -r ".${REALITY_STATE_KEY}.public_key // empty" "$STATE_FILE" 2>/dev/null)"
+    short_id="$(jq -r ".${REALITY_STATE_KEY}.default_short_id // empty" "$STATE_FILE" 2>/dev/null)"
+    sni="$(jq -r ".${REALITY_STATE_KEY}.server_name // empty" "$STATE_FILE" 2>/dev/null)"
+    [[ -n "$sni" ]] && diag_info "SNI: ${sni}"
+    [[ -n "$public_key" ]] && diag_info "PublicKey: ${public_key}"
+    [[ -n "$short_id" ]] && diag_info "ShortID: ${short_id}"
+}
+
+doctor_reality() {
+    local r_in d_in port defender_port sni flow dest short_count
+
+    echo -e "\n${YELLOW}Reality 诊断${PLAIN}"
+    echo "----------------------------------------"
+    doctor_reality_config
+    if ! inbound_exists "$REALITY_TAG"; then
+        diag_info "Reality 未安装，跳过 Reality 专项检查"
+        return 0
+    fi
+    inbound_exists "$REALITY_DEFENDER_TAG" && diag_ok "Reality defender 已安装" || diag_fail "Reality defender 未安装"
+    diag_ok "Reality inbound 已安装"
+
+    r_in="$(jq -c --arg tag "$REALITY_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE")"
+    d_in="$(jq -c --arg tag "$REALITY_DEFENDER_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE")"
+    port="$(echo "$r_in" | jq -r '.port // empty')"
+    defender_port="$(echo "$d_in" | jq -r '.port // empty')"
+    sni="$(echo "$r_in" | jq -r '.streamSettings.realitySettings.serverNames[0] // empty')"
+    flow="$(echo "$r_in" | jq -r '.settings.clients[0].flow // empty')"
+    dest="$(echo "$r_in" | jq -r '.streamSettings.realitySettings.dest // empty')"
+    short_count="$(echo "$r_in" | jq -r '.streamSettings.realitySettings.shortIds | length')"
+
+    echo "$r_in" | jq -e '.protocol == "vless" and .streamSettings.network == "tcp" and .streamSettings.security == "reality"' >/dev/null && diag_ok "Reality inbound 协议/传输/安全类型正确" || diag_fail "Reality inbound 协议/传输/安全类型异常"
+    echo "$r_in" | jq -e '(.settings.clients[0].id // "") != ""' >/dev/null && diag_ok "Reality UUID 存在" || diag_fail "Reality UUID 缺失"
+    if [[ "$flow" == "$REALITY_FLOW_DEFAULT" ]]; then
+        diag_ok "Reality flow 一致：${REALITY_FLOW_DEFAULT}"
+    elif [[ -z "$flow" ]]; then
+        diag_warn "旧 Reality 配置缺少 flow，建议重新执行 ike reality install。"
+    else
+        diag_fail "Reality flow 异常: ${flow}"
+    fi
+    echo "$r_in" | jq -e '(.streamSettings.realitySettings.privateKey // "") != ""' >/dev/null && diag_ok "Reality privateKey 已写入服务端配置（默认不输出值）" || diag_fail "Reality privateKey 缺失"
+    [[ -n "$sni" ]] && diag_ok "Reality serverNames 已配置" || diag_fail "Reality serverNames 缺失"
+    ((short_count == 8)) && diag_ok "Reality shortIds 数量为 8" || diag_warn "Reality shortIds 数量为 ${short_count}"
+    [[ "$dest" == "127.0.0.1:${defender_port}" ]] && diag_ok "Reality dest 指向 defender: ${dest}" || diag_fail "Reality dest 异常: ${dest}"
+    echo "$d_in" | jq -e --arg sni "$sni" '.listen == "127.0.0.1" and .protocol == "dokodemo-door" and .settings.address == $sni and .settings.port == 443 and .settings.network == "tcp"' >/dev/null && diag_ok "Reality defender 配置正确" || diag_fail "Reality defender 配置异常"
+    doctor_reality_routing "$sni"
+    doctor_reality_state
+    doctor_reality_port "$port" "$defender_port"
+    doctor_reality_sni "$sni"
+    doctor_reality_output
+}
+
+doctor_xhttp() {
+    local x_in state_enabled config_has_fm link fm path
+
+    echo -e "\n${YELLOW}XHTTP-FinalMask 诊断${PLAIN}"
+    echo "----------------------------------------"
+    [[ -f "$CONFIG_FILE" ]] && diag_ok "config.json 存在" || diag_fail "config.json 不存在"
+    command -v jq >/dev/null 2>&1 && diag_ok "jq 存在" || diag_fail "jq 不存在"
+    if ! inbound_exists "$VLESS_XHTTP_FM_TAG"; then
+        diag_info "XHTTP-FinalMask 未安装，跳过 XHTTP 专项检查"
+        return 0
+    fi
+    x_in="$(jq -c --arg tag "$VLESS_XHTTP_FM_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE")"
+    path="$(echo "$x_in" | jq -r '.streamSettings.xhttpSettings.path // empty')"
+    echo "$x_in" | jq -e '.protocol == "vless" and (.settings.decryption // "") != "" and .streamSettings.network == "xhttp" and .streamSettings.security == "none"' >/dev/null && diag_ok "XHTTP inbound 协议/加密/传输配置正确" || diag_fail "XHTTP inbound 配置异常"
+    validate_xhttp_path "$path" && diag_ok "XHTTP path 合法: ${path}" || diag_fail "XHTTP path 非法: ${path}"
+    if [[ -f "$STATE_FILE" ]]; then
+        jq -e ".${VLESS_XHTTP_FM_STATE_KEY}.port and .${VLESS_XHTTP_FM_STATE_KEY}.path and .${VLESS_XHTTP_FM_STATE_KEY}.encryption and (.${VLESS_XHTTP_FM_STATE_KEY}.finalmask_enabled != null) and .${VLESS_XHTTP_FM_STATE_KEY}.link" "$STATE_FILE" >/dev/null 2>&1 &&
+            diag_ok "XHTTP state 字段完整" ||
+            diag_warn "XHTTP state 字段不完整"
+        state_enabled="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
+        link="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.link // empty" "$STATE_FILE" 2>/dev/null)"
+    else
+        diag_warn "installer-state.json 不存在"
+        state_enabled="false"
+        link=""
+    fi
+    config_has_fm="$(echo "$x_in" | jq -r '.streamSettings | has("finalmask")')"
+    if [[ "$state_enabled" == "true" ]]; then
+        [[ "$config_has_fm" == "true" ]] && diag_ok "FinalMask 已写入 config" || diag_fail "state 显示 FinalMask on，但 config 未写 finalmask"
+        jq -e ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_json" "$STATE_FILE" >/dev/null 2>&1 && diag_ok "FinalMask JSON 已写入 state" || diag_fail "FinalMask JSON 缺失"
+        [[ "$link" == *"fm="* ]] && diag_ok "分享链接包含 fm 参数" || diag_fail "分享链接缺少 fm 参数"
+        fm="${link#*fm=}"
+        fm="${fm%%#*}"
+        [[ "$fm" != *"{"* && "$fm" != *"}"* && "$fm" != *" "* && "$fm" != *"\""* ]] && diag_ok "fm 参数已 URL 编码" || diag_fail "fm 参数包含未编码 JSON 字符"
+    else
+        [[ "$config_has_fm" == "false" ]] && diag_ok "FinalMask off 时 config 未写 finalmask" || diag_fail "FinalMask off 时 config 仍存在 finalmask"
+        [[ "$link" != *"fm="* ]] && diag_ok "FinalMask off 时链接不含 fm" || diag_fail "FinalMask off 时链接仍含 fm"
+    fi
+    diag_info "Encryption: $(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.encryption // empty" "$STATE_FILE" 2>/dev/null)"
+}
+
+doctor_proxy() {
+    local tags ports
+
+    echo -e "\n${YELLOW}Xray 代理总览诊断${PLAIN}"
+    echo "----------------------------------------"
+    [[ -x "$BIN_PATH" ]] && diag_ok "xray 二进制存在" || diag_warn "xray 二进制不存在"
+    diag_info "Xray binary: $BIN_PATH"
+    diag_info "Xray version: $(detect_xray_version 2>/dev/null || printf '%s' '未安装')"
+    [[ -f "$CONFIG_FILE" ]] && diag_ok "config.json 存在" || diag_fail "config.json 不存在"
+    command -v jq >/dev/null 2>&1 && diag_ok "jq 存在" || diag_fail "jq 不存在"
+    if [[ "$INIT_SYSTEM" == "systemd" ]] && command -v systemctl >/dev/null 2>&1; then
+        [[ "$(xray_service_status)" == "运行中" ]] && diag_ok "xray 服务运行中" || diag_warn "xray 服务当前未运行"
+    else
+        diag_warn "未检测到 systemd，跳过 systemctl 服务检查"
+    fi
+    [[ -f "$CONFIG_FILE" && -x "$BIN_PATH" ]] && diag_info "Xray 配置校验: $(xray_config_test_status)"
+    if [[ -f "$CONFIG_FILE" ]] && command -v jq >/dev/null 2>&1; then
+        tags="$(jq -r '[.inbounds[]?.tag] | join(", ")' "$CONFIG_FILE" 2>/dev/null)"
+        ports="$(jq -r '[.inbounds[]? | select(.port != null) | (.tag + ":" + (.port|tostring))] | join(", ")' "$CONFIG_FILE" 2>/dev/null)"
+        diag_info "已安装 inbound tags: ${tags:-无}"
+        diag_info "监听端口: ${ports:-无}"
+    fi
+    default_safety_block_enabled && diag_ok "默认安全屏蔽规则存在" || diag_warn "默认安全屏蔽规则未完整启用"
+    detect_xray_feature_support
+    if view_config dual quick >/dev/null 2>&1; then
+        diag_ok "ike view 可以输出"
+    else
+        diag_warn "ike view 输出失败，请检查配置和 state"
+    fi
+}
+
+run_doctor_command() {
+    local target="${1:-all}"
+
+    case "$target" in
+        preflight) preflight_system ;;
+        reality) doctor_reality ;;
+        xhttp) doctor_xhttp ;;
+        proxy) doctor_proxy ;;
+        all | "")
+            preflight_system || true
+            view_config "$LINK_VIEW_MODE" "doctor" || true
+            doctor_proxy
+            doctor_reality
+            doctor_xhttp
+            ;;
+        *)
+            err "[失败] 未知 doctor 参数: $target"
+            echo "用法: ike doctor preflight|reality|xhttp|proxy|all"
+            return 1
+            ;;
+    esac
+}
+
+show_journal_recent() {
+    if command -v journalctl >/dev/null 2>&1; then
+        journalctl -u "$SERVICE_NAME" -n 80 --no-pager 2>&1 | redact_sensitive_stream || true
+    else
+        diag_warn "journalctl 不存在，无法读取最近日志"
+    fi
+}
+
+run_xray_config_test_verbose() {
+    if [[ ! -x "$BIN_PATH" ]]; then
+        diag_warn "xray 不存在，跳过 xray run -test"
+        return 0
+    fi
+    if "$BIN_PATH" run -test -c "$CONFIG_FILE"; then
+        diag_ok "xray run -test 通过"
+        return 0
+    fi
+    diag_fail "xray run -test 失败"
+    return 1
+}
+
+smoke_reality() {
+    local restart="${1:-false}" port defender_port
+
+    echo -e "\n${YELLOW}Reality 烟测辅助${PLAIN}"
+    echo "----------------------------------------"
+    if ! inbound_exists "$REALITY_TAG"; then
+        diag_info "Reality 未安装，跳过 Reality smoke"
+        return 0
+    fi
+    print_reality_result "show"
+    run_xray_config_test_verbose || print_reality_failure_hint
+    if [[ "$restart" == "true" ]]; then
+        if restart_xray_service; then
+            diag_ok "xray restart 成功"
+        else
+            diag_fail "xray restart 失败，最近日志如下"
+            show_journal_recent
+            diag_warn "可检查备份并重新部署 Reality，但脚本不会自动删除其它配置。"
+        fi
+    else
+        diag_info "默认不自动 restart；如需重启请执行: ike smoke reality --restart"
+    fi
+    diag_info "Xray 服务状态: $(xray_service_status)"
+    port="$(jq -r --arg tag "$REALITY_TAG" '.inbounds[]? | select(.tag == $tag).port // empty' "$CONFIG_FILE")"
+    defender_port="$(jq -r --arg tag "$REALITY_DEFENDER_TAG" '.inbounds[]? | select(.tag == $tag).port // empty' "$CONFIG_FILE")"
+    doctor_reality_port "$port" "$defender_port"
+    show_journal_recent
+}
+
+smoke_xhttp() {
+    local restart="${1:-false}" port fm_enabled
+
+    echo -e "\n${YELLOW}XHTTP-FinalMask 烟测辅助${PLAIN}"
+    echo "----------------------------------------"
+    if ! inbound_exists "$VLESS_XHTTP_FM_TAG"; then
+        diag_info "XHTTP-FinalMask 未安装，跳过 XHTTP smoke"
+        return 0
+    fi
+    print_vless_xhttp_finalmask_result "show"
+    if ! run_xray_config_test_verbose; then
+        fm_enabled="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
+        [[ "$fm_enabled" == "true" ]] && print_finalmask_failure_hint
+        print_xhttp_failure_hint
+    fi
+    if [[ "$restart" == "true" ]]; then
+        if restart_xray_service; then
+            diag_ok "xray restart 成功"
+        else
+            diag_fail "xray restart 失败，最近日志如下"
+            show_journal_recent
+        fi
+    else
+        diag_info "默认不自动 restart；如需重启请执行: ike smoke xhttp --restart"
+    fi
+    port="$(jq -r --arg tag "$VLESS_XHTTP_FM_TAG" '.inbounds[]? | select(.tag == $tag).port // empty' "$CONFIG_FILE")"
+    if port_listening "$port"; then
+        diag_ok "XHTTP 端口正在监听: ${port}"
+    else
+        diag_warn "XHTTP 端口未监听或 ss 不可用: ${port}"
+    fi
+    diag_info "FinalMask: $(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
+}
+
+run_smoke_command() {
+    local target="${1:-all}"
+    local restart="false"
+
+    shift || true
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --restart)
+                restart="true"
+                ;;
+            *)
+                err "[失败] 未知 smoke 参数: $1"
+                echo "用法: ike smoke reality|xhttp|all [--restart]"
+                return 1
+                ;;
+        esac
+        shift
+    done
+
+    case "$target" in
+        reality) smoke_reality "$restart" ;;
+        xhttp) smoke_xhttp "$restart" ;;
+        all | "")
+            smoke_reality "$restart"
+            smoke_xhttp "$restart"
+            doctor_proxy
+            ;;
+        *)
+            err "[失败] 未知 smoke 目标: $target"
+            echo "用法: ike smoke reality|xhttp|all [--restart]"
+            return 1
+            ;;
+    esac
+}
+
+redact_config_json() {
+    [[ -f "$CONFIG_FILE" ]] || return 0
+    jq '
+      def redact:
+        walk(if type == "object" then
+          with_entries(
+            if (.key | test("(?i)(privateKey|private_key|decryption|password|pass|token|secret)")) then
+              .value = "***REDACTED***"
+            else
+              .
+            end
+          )
+        else
+          .
+        end);
+      redact
+    ' "$CONFIG_FILE" 2>/dev/null
+}
+
+render_export_report() {
+    local tags ports xray_version
+
+    echo "Xray-OneClick 脱敏诊断报告"
+    echo "----------------------------------------"
+    echo "SCRIPT_VERSION: ${SCRIPT_VERSION}"
+    if [[ -x "$BIN_PATH" ]]; then
+        xray_version="$("$BIN_PATH" version 2>/dev/null | head -n 1 || true)"
+        echo "xray version: ${xray_version:-读取失败}"
+    else
+        echo "xray version: 未安装"
+    fi
+    echo "systemctl status: $(xray_service_status)"
+    echo "config test: $(xray_config_test_status)"
+    echo "installed protocols: $(installed_protocols_summary)"
+    if [[ -f "$CONFIG_FILE" ]] && command -v jq >/dev/null 2>&1; then
+        tags="$(jq -r '[.inbounds[]?.tag] | join(", ")' "$CONFIG_FILE" 2>/dev/null)"
+        ports="$(jq -r '[.inbounds[]? | select(.port != null) | (.tag + ":" + (.port|tostring))] | join(", ")' "$CONFIG_FILE" 2>/dev/null)"
+        echo "inbound tags: ${tags:-无}"
+        echo "listen ports: ${ports:-无}"
+    fi
+    echo
+    echo "Reality 摘要:"
+    if inbound_exists "$REALITY_TAG"; then
+        jq -r --arg tag "$REALITY_TAG" '.inbounds[]? | select(.tag == $tag) | "  port=\(.port) sni=\(.streamSettings.realitySettings.serverNames[0] // "") flow=\(.settings.clients[0].flow // "")"' "$CONFIG_FILE"
+        jq -r ".${REALITY_STATE_KEY} // {} | \"  publicKey=\(.public_key // \"\") shortId=\(.default_short_id // \"\") link=\(.link // \"\")\"" "$STATE_FILE" 2>/dev/null
+    else
+        echo "  未安装"
+    fi
+    echo
+    echo "XHTTP-FinalMask 摘要:"
+    if inbound_exists "$VLESS_XHTTP_FM_TAG"; then
+        jq -r --arg tag "$VLESS_XHTTP_FM_TAG" '.inbounds[]? | select(.tag == $tag) | "  port=\(.port) path=\(.streamSettings.xhttpSettings.path // "") finalmask=\(.streamSettings | has("finalmask"))"' "$CONFIG_FILE"
+        jq -r ".${VLESS_XHTTP_FM_STATE_KEY} // {} | \"  finalmask_enabled=\(.finalmask_enabled // false) link=\(.link // \"\")\"" "$STATE_FILE" 2>/dev/null
+    else
+        echo "  未安装"
+    fi
+    echo
+    echo "最近日志摘要:"
+    if command -v journalctl >/dev/null 2>&1; then
+        journalctl -u "$SERVICE_NAME" -n 20 --no-pager 2>/dev/null | redact_sensitive_stream || true
+    else
+        echo "  journalctl 不可用"
+    fi
+    echo
+    echo "脱敏 config 摘要:"
+    redact_config_json || true
+}
+
+render_export_clients() {
+    echo "Xray-OneClick 客户端参数导出"
+    echo "----------------------------------------"
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo "未找到 config.json"
+        return 0
+    fi
+    init_state
+    get_local_addresses
+    host_candidates "dual"
+    view_config dual quick || true
+    if [[ -f "$STATE_FILE" ]] && jq -e ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_enabled == true" "$STATE_FILE" >/dev/null 2>&1; then
+        echo
+        echo "提示: 如客户端无法导入，请手动填写 path/encryption/finalmask。"
+    fi
+}
+
+write_or_print_export() {
+    local output_path="${1:-}"
+    local content
+
+    content="$(cat)"
+    if [[ -n "$output_path" ]]; then
+        printf '%s\n' "$content" >"$output_path" || {
+            err "[导出] 写入失败: $output_path"
+            return 1
+        }
+        chmod 600 "$output_path" 2>/dev/null || true
+        ok "[导出] 已写入: $output_path"
+    else
+        printf '%s\n' "$content"
+    fi
+}
+
+run_export_command() {
+    local action="${1:-report}"
+    local output=""
+
+    shift || true
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --output)
+                output="${2:-}"
+                [[ -n "$output" ]] || {
+                    err "[导出] --output 需要路径"
+                    return 1
+                }
+                shift 2
+                ;;
+            *)
+                err "[失败] 未知 export 参数: $1"
+                echo "用法: ike export report|clients [--output PATH]"
+                return 1
+                ;;
+        esac
+    done
+
+    case "$action" in
+        report)
+            render_export_report | write_or_print_export "$output"
+            ;;
+        clients)
+            render_export_clients | write_or_print_export "$output"
+            ;;
+        *)
+            err "[失败] 未知 export 目标: $action"
+            echo "用法: ike export report|clients [--output PATH]"
+            return 1
+            ;;
+    esac
+}
+
+run_preflight_command() {
+    preflight_system
+}
+
+run_xray_command() {
+    local action="${1:-version}"
+    local version="latest"
+    local dry_run="false"
+    local restart="false"
+
+    shift || true
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --version)
+                version="${2:-}"
+                [[ -n "$version" ]] || {
+                    err "[Xray] --version 需要版本号，例如 v25.1.1"
+                    return 1
+                }
+                shift 2
+                ;;
+            --xray-version)
+                version="${2:-}"
+                [[ -n "$version" ]] || {
+                    err "[Xray] --xray-version 需要版本号，例如 v25.1.1"
+                    return 1
+                }
+                shift 2
+                ;;
+            --dry-run)
+                dry_run="true"
+                shift
+                ;;
+            --restart)
+                restart="true"
+                shift
+                ;;
+            *)
+                err "[失败] 未知 xray 参数: $1"
+                echo "用法: ike xray version | ike xray upgrade [--version vX.Y.Z] [--dry-run] [--restart]"
+                return 1
+                ;;
+        esac
+    done
+
+    case "$action" in
+        version | "")
+            print_xray_version_summary
+            ;;
+        upgrade)
+            upgrade_xray_core "$version" "$dry_run" "$restart"
+            ;;
+        *)
+            err "[失败] 未知 xray 命令: $action"
+            echo "用法: ike xray version | ike xray upgrade [--version vX.Y.Z] [--dry-run] [--restart]"
+            return 1
+            ;;
+    esac
+}
+
+backup_before_migration() {
+    local timestamp backup_dir
+
+    timestamp="$(date +%Y%m%d%H%M%S)"
+    backup_dir="${CONFIG_DIR}/migration-backup-${timestamp}"
+    mkdir -p "$backup_dir"
+    [[ -f "$CONFIG_FILE" ]] && cp -a "$CONFIG_FILE" "$backup_dir/config.json"
+    [[ -f "$STATE_FILE" ]] && cp -a "$STATE_FILE" "$backup_dir/installer-state.json"
+    chmod 700 "$backup_dir" 2>/dev/null || true
+    info "[迁移] 已备份到: $backup_dir"
+}
+
+migrate_old_state() {
+    local dry_run="${1:-false}"
+    local tmp changed="false" reality_link="" xhttp_link=""
+    local old_reality_flow old_reality_link old_xhttp_enabled old_xhttp_link
+    local inferred_reality_flow="" inferred_xhttp_enabled="" inferred_xhttp_finalmask_json="null"
+    local old_xhttp_finalmask_json
+
+    if [[ "$dry_run" == "true" ]]; then
+        [[ -f "$STATE_FILE" ]] || {
+            diag_info "dry-run：installer-state.json 不存在，无需迁移"
+            return 0
+        }
+        jq empty "$STATE_FILE" >/dev/null || return 1
+    else
+        init_state
+    fi
+    old_reality_flow="$(jq -r ".${REALITY_STATE_KEY}.flow // empty" "$STATE_FILE" 2>/dev/null)"
+    old_reality_link="$(jq -r ".${REALITY_STATE_KEY}.link // empty" "$STATE_FILE" 2>/dev/null)"
+    old_xhttp_enabled="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_enabled // empty" "$STATE_FILE" 2>/dev/null)"
+    old_xhttp_link="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.link // empty" "$STATE_FILE" 2>/dev/null)"
+    old_xhttp_finalmask_json="$(jq -c ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_json // empty" "$STATE_FILE" 2>/dev/null)"
+
+    if jq -e ".${REALITY_STATE_KEY}" "$STATE_FILE" >/dev/null 2>&1; then
+        if [[ -z "$old_reality_flow" ]]; then
+            if [[ -f "$CONFIG_FILE" ]]; then
+                inferred_reality_flow="$(jq -r --arg tag "$REALITY_TAG" '.inbounds[]? | select(.tag == $tag).settings.clients[0].flow // empty' "$CONFIG_FILE" 2>/dev/null)"
+            fi
+            if [[ -n "$inferred_reality_flow" ]]; then
+                diag_info "将从 config 补齐 vless_reality.flow"
+                changed="true"
+            else
+                diag_warn "无法推导 vless_reality.flow；旧配置可能缺少 Vision flow，建议重新执行 ike reality install"
+            fi
+        fi
+        if [[ -z "$old_reality_link" ]]; then
+            REALITY_PORT="$(jq -r ".${REALITY_STATE_KEY}.port // empty" "$STATE_FILE")"
+            REALITY_UUID="$(jq -r ".${REALITY_STATE_KEY}.uuid // empty" "$STATE_FILE")"
+            REALITY_PUBLIC_KEY="$(jq -r ".${REALITY_STATE_KEY}.public_key // empty" "$STATE_FILE")"
+            REALITY_DEFAULT_SHORT_ID="$(jq -r ".${REALITY_STATE_KEY}.default_short_id // empty" "$STATE_FILE")"
+            REALITY_SERVER_NAME="$(jq -r ".${REALITY_STATE_KEY}.server_name // empty" "$STATE_FILE")"
+            REALITY_SPIDER_X="$(jq -r ".${REALITY_STATE_KEY}.spider_x // \"/\"" "$STATE_FILE")"
+            REALITY_FLOW="${old_reality_flow:-$inferred_reality_flow}"
+            if [[ -n "$REALITY_FLOW" ]] && reality_link="$(build_reality_share_link 2>/dev/null)"; then
+                diag_info "将补齐 vless_reality.link"
+                changed="true"
+            else
+                diag_warn "无法推导 Reality link，缺少 public_key/short_id/server_name/flow 等字段"
+            fi
+        fi
+    fi
+
+    if jq -e ".${VLESS_XHTTP_FM_STATE_KEY}" "$STATE_FILE" >/dev/null 2>&1; then
+        if [[ -z "$old_xhttp_enabled" ]]; then
+            if [[ -f "$CONFIG_FILE" ]]; then
+                inferred_xhttp_enabled="$(jq -r --arg tag "$VLESS_XHTTP_FM_TAG" 'if any(.inbounds[]?; .tag == $tag) then ([.inbounds[]? | select(.tag == $tag).streamSettings | has("finalmask")][0] | tostring) else empty end' "$CONFIG_FILE" 2>/dev/null)"
+            fi
+            if [[ -n "$inferred_xhttp_enabled" && "$inferred_xhttp_enabled" != "null" ]]; then
+                diag_info "将从 config 补齐 vless_xhttp_finalmask.finalmask_enabled"
+                changed="true"
+            else
+                diag_warn "无法推导 vless_xhttp_finalmask.finalmask_enabled"
+            fi
+        fi
+        if [[ "${old_xhttp_enabled:-$inferred_xhttp_enabled}" == "true" && (-z "$old_xhttp_finalmask_json" || "$old_xhttp_finalmask_json" == "null") ]]; then
+            if [[ -f "$CONFIG_FILE" ]]; then
+                inferred_xhttp_finalmask_json="$(jq -c --arg tag "$VLESS_XHTTP_FM_TAG" '.inbounds[]? | select(.tag == $tag).streamSettings.finalmask // null' "$CONFIG_FILE" 2>/dev/null)"
+            fi
+            if [[ -n "$inferred_xhttp_finalmask_json" && "$inferred_xhttp_finalmask_json" != "null" ]]; then
+                diag_info "将从 config 补齐 vless_xhttp_finalmask.finalmask_json"
+                changed="true"
+            else
+                diag_warn "无法推导 vless_xhttp_finalmask.finalmask_json"
+            fi
+        fi
+        if [[ -z "$old_xhttp_link" ]]; then
+            XHTTP_PORT="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.port // empty" "$STATE_FILE")"
+            XHTTP_PATH="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.path // empty" "$STATE_FILE")"
+            VLESS_UUID="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.uuid // empty" "$STATE_FILE")"
+            VLESS_ENCRYPTION="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.encryption // empty" "$STATE_FILE")"
+            XHTTP_FINALMASK_ENABLED="${old_xhttp_enabled:-$inferred_xhttp_enabled}"
+            XHTTP_FINALMASK_JSON="${old_xhttp_finalmask_json:-$inferred_xhttp_finalmask_json}"
+            [[ -n "$XHTTP_FINALMASK_JSON" ]] || XHTTP_FINALMASK_JSON="null"
+            if [[ -n "$XHTTP_FINALMASK_ENABLED" ]] && xhttp_link="$(build_vless_xhttp_finalmask_share_link 2>/dev/null)"; then
+                diag_info "将补齐 vless_xhttp_finalmask.link"
+                changed="true"
+            else
+                diag_warn "无法推导 XHTTP link，缺少 path/encryption/uuid/finalmask_enabled 等字段"
+            fi
+        fi
+    fi
+
+    [[ "$changed" == "true" ]] || {
+        diag_ok "未发现需要迁移的 state 字段"
+        return 0
+    }
+    [[ "$dry_run" == "true" ]] && {
+        diag_info "dry-run：未修改 config/state"
+        return 0
+    }
+
+    tmp="$(mktemp)" || return 1
+    jq --arg reality_flow "$inferred_reality_flow" \
+        --arg reality_link "$reality_link" \
+        --arg xhttp_enabled "${inferred_xhttp_enabled}" \
+        --arg xhttp_link "$xhttp_link" \
+        --argjson xhttp_finalmask_json "$inferred_xhttp_finalmask_json" \
+        --arg reality_key "$REALITY_STATE_KEY" \
+        --arg xhttp_key "$VLESS_XHTTP_FM_STATE_KEY" '
+        if .[$reality_key]? then
+          (if ((.[$reality_key].flow // "") == "" and $reality_flow != "") then .[$reality_key].flow = $reality_flow else . end) |
+          (if ($reality_link != "") then .[$reality_key].link = (.[$reality_key].link // $reality_link) else . end)
+        else . end |
+        if .[$xhttp_key]? then
+          (if ((.[$xhttp_key] | has("finalmask_enabled") | not) and $xhttp_enabled != "") then .[$xhttp_key].finalmask_enabled = ($xhttp_enabled == "true") else . end) |
+          (if ((.[$xhttp_key].finalmask_json // null) == null and $xhttp_finalmask_json != null) then .[$xhttp_key].finalmask_json = $xhttp_finalmask_json else . end) |
+          (if ($xhttp_link != "") then .[$xhttp_key].link = (.[$xhttp_key].link // $xhttp_link) else . end)
+        else . end
+      ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
+    rm -f "$tmp"
+    ensure_config_security
+    ok "[迁移] state 兼容字段已补齐。"
+}
+
+migrate_old_config() {
+    normalize_config_schema
+}
+
+detect_legacy_tags() {
+    [[ -f "$CONFIG_FILE" ]] || return 0
+    jq -r '.inbounds[]?.tag // empty' "$CONFIG_FILE" 2>/dev/null | grep -E '^(forward-|tunnel-)' || true
+}
+
+normalize_config_schema() {
+    [[ -f "$CONFIG_FILE" ]] || return 0
+    jq empty "$CONFIG_FILE" >/dev/null || return 1
+}
+
+run_migrate_command() {
+    local dry_run="false"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dry-run)
+                dry_run="true"
+                ;;
+            *)
+                err "[失败] 未知 migrate 参数: $1"
+                echo "用法: ike migrate [--dry-run]"
+                return 1
+                ;;
+        esac
+        shift
+    done
+
+    echo -e "\n${YELLOW}旧配置迁移检查${PLAIN}"
+    echo "----------------------------------------"
+    [[ "$dry_run" == "true" ]] || backup_before_migration
+    migrate_old_config
+    migrate_old_state "$dry_run"
+}
+
+create_purge_backup() {
+    local backup_dir timestamp archive
+
+    backup_dir="${XRAY_PURGE_BACKUP_DIR:-/var/backups/xray-oneclick}"
+    timestamp="$(date +%Y%m%d-%H%M%S)"
+    archive="${backup_dir}/xray-oneclick-purge-${timestamp}.tar.gz"
+    mkdir -p "$backup_dir"
+    tar -czf "$archive" "$CONFIG_DIR" "$(service_file_path)" "$BIN_PATH" 2>/dev/null || true
+    chmod 600 "$archive" 2>/dev/null || true
+    echo "$archive"
+}
+
+run_uninstall_command() {
+    local mode="keep-config"
+    local dry_run="false"
+    local yes="false"
+    local service_file
+    local -a remove_paths=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --keep-config)
+                mode="keep-config"
+                ;;
+            --purge)
+                mode="purge"
+                ;;
+            --dry-run)
+                dry_run="true"
+                ;;
+            --yes | -y)
+                yes="true"
+                ;;
+            *)
+                err "[失败] 未知 uninstall 参数: $1"
+                echo "用法: ike uninstall [--keep-config|--purge] [--dry-run] [--yes]"
+                return 1
+                ;;
+        esac
+        shift
+    done
+
+    service_file="$(service_file_path)"
+    remove_paths=("$BIN_PATH" "$SHORTCUT_PATH" "$LEGACY_SHORTCUT_PATH" "$INSTALLER_PATH")
+    if [[ -f "$service_file" ]]; then
+        if grep -q "Managed by Xray-OneClick" "$service_file"; then
+            remove_paths+=("$service_file")
+        else
+            diag_warn "检测到非本项目 service，默认不删除: $service_file"
+        fi
+    fi
+    if [[ "$mode" == "purge" ]]; then
+        if [[ "$yes" != "true" ]] && ! env_truthy "${XRAY_ONECLICK_YES:-}"; then
+            if [[ -t 0 ]]; then
+                confirm_yes_no "purge 会删除配置、state 和日志，是否继续?" "n" || return 1
+            else
+                err "[卸载] purge 会删除配置和日志，非交互模式必须添加 --yes。"
+                return 1
+            fi
+        fi
+        remove_paths+=("$CONFIG_DIR" "$(log_dir_path)" "$INSTALLER_DIR")
+    else
+        diag_info "keep-config: 保留 $CONFIG_FILE 和 $STATE_FILE"
+    fi
+
+    echo -e "\n${YELLOW}卸载预览${PLAIN}"
+    printf '将删除: %s\n' "${remove_paths[@]}"
+    [[ "$dry_run" == "true" ]] && {
+        diag_info "dry-run：未删除任何文件"
+        return 0
+    }
+
+    if [[ "$mode" == "purge" ]]; then
+        diag_info "最终备份包: $(create_purge_backup)"
+    fi
+    stop_service
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+    fi
+    for path in "${remove_paths[@]}"; do
+        [[ -e "$path" ]] || continue
+        rm -rf "$path"
+    done
+    command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1 || true
+    ok "[卸载] 完成。"
+}
+
+show_reality_usage() {
+    cat <<'EOF'
+用法:
+  ike reality install [--port PORT] [--defender-port PORT] [--sni DOMAIN] [--dry-run] [--yes] [--empty-clients]
+  ike reality show
+  ike reality remove
+  ike view reality
+EOF
+}
+
+show_xhttp_usage() {
+    cat <<'EOF'
+用法:
+  ike xhttp install [--port PORT] [--path /path] [--finalmask on|off] [--dry-run] [--auth x25519|mlkem768]
+  ike xhttp show
+  ike xhttp remove
+  ike view xhttp
+EOF
+}
+
+run_reality_command() {
+    local action="${1:-show}"
+
+    case "$action" in
+        help | -h | --help)
+            show_reality_usage
+            ;;
+        install)
+            shift
+            REALITY_PORT_REQUEST=""
+            REALITY_DEFENDER_PORT_REQUEST=""
+            REALITY_SNI_REQUEST=""
+            REALITY_EMPTY_CLIENTS="false"
+            REALITY_ASSUME_YES="false"
+            REALITY_FLOW="$REALITY_FLOW_DEFAULT"
+            REALITY_DRY_RUN="false"
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --port)
+                        REALITY_PORT_REQUEST="${2:-}"
+                        shift 2
+                        ;;
+                    --defender-port)
+                        REALITY_DEFENDER_PORT_REQUEST="${2:-}"
+                        shift 2
+                        ;;
+                    --sni)
+                        REALITY_SNI_REQUEST="${2:-}"
+                        shift 2
+                        ;;
+                    --empty-clients)
+                        REALITY_EMPTY_CLIENTS="true"
+                        shift
+                        ;;
+                    --yes | -y)
+                        REALITY_ASSUME_YES="true"
+                        shift
+                        ;;
+                    --dry-run)
+                        REALITY_DRY_RUN="true"
+                        REALITY_SKIP_TLS_TEST="${REALITY_SKIP_TLS_TEST:-1}"
+                        shift
+                        ;;
+                    help | -h | --help)
+                        show_reality_usage
+                        return 0
+                        ;;
+                    *)
+                        err "[失败] 未知 reality install 参数: $1"
+                        show_reality_usage
+                        return 1
+                        ;;
+                esac
+            done
+            if [[ "$REALITY_DRY_RUN" == "true" ]]; then
+                configure_reality "dry-run" && install_reality
+            else
+                prepare_system || return 1
+                configure_reality "cli" && install_reality
+            fi
+            ;;
+        show | "")
+            init_state
+            print_reality_result "show"
+            ;;
+        remove | delete | del)
+            prepare_system || return 1
+            remove_reality_config
+            ;;
+        *)
+            err "[失败] 未知 reality 参数: $action"
+            show_reality_usage
+            return 1
+            ;;
+    esac
+}
+
+run_xhttp_command() {
+    local action="${1:-show}"
+
+    case "$action" in
+        help | -h | --help)
+            show_xhttp_usage
+            ;;
+        install)
+            shift
+            XHTTP_PORT_REQUEST=""
+            XHTTP_PATH_REQUEST=""
+            XHTTP_FINALMASK_REQUEST="true"
+            XHTTP_DRY_RUN="false"
+            VLESS_MODE="basic"
+            VLESS_AUTH="x25519"
+            VLESS_ENC_METHOD="native"
+            VLESS_CLIENT_RTT="0rtt"
+            VLESS_SERVER_TICKET="600s"
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --port)
+                        XHTTP_PORT_REQUEST="${2:-}"
+                        shift 2
+                        ;;
+                    --path)
+                        XHTTP_PATH_REQUEST="${2:-}"
+                        shift 2
+                        ;;
+                    --finalmask)
+                        XHTTP_FINALMASK_REQUEST="${2:-}"
+                        shift 2
+                        ;;
+                    --auth)
+                        VLESS_AUTH="${2:-}"
+                        shift 2
+                        ;;
+                    --enc-method)
+                        VLESS_ENC_METHOD="${2:-}"
+                        VLESS_MODE="advanced"
+                        shift 2
+                        ;;
+                    --rtt)
+                        VLESS_CLIENT_RTT="${2:-}"
+                        VLESS_MODE="advanced"
+                        shift 2
+                        ;;
+                    --ticket)
+                        VLESS_SERVER_TICKET="${2:-}"
+                        VLESS_MODE="advanced"
+                        shift 2
+                        ;;
+                    --dry-run)
+                        XHTTP_DRY_RUN="true"
+                        shift
+                        ;;
+                    help | -h | --help)
+                        show_xhttp_usage
+                        return 0
+                        ;;
+                    *)
+                        err "[失败] 未知 xhttp install 参数: $1"
+                        show_xhttp_usage
+                        return 1
+                        ;;
+                esac
+            done
+            case "$VLESS_AUTH" in
+                x25519 | mlkem768) ;;
+                *)
+                    err "[XHTTP] --auth 仅支持 x25519 或 mlkem768。"
+                    return 1
+                    ;;
+            esac
+            if [[ "$XHTTP_DRY_RUN" == "true" ]]; then
+                configure_vless_xhttp_finalmask "dry-run" && install_vless_xhttp_finalmask
+            else
+                prepare_system || return 1
+                configure_vless_xhttp_finalmask "cli" && install_vless_xhttp_finalmask
+            fi
+            ;;
+        show | "")
+            init_state
+            print_vless_xhttp_finalmask_result "show"
+            ;;
+        remove | delete | del)
+            prepare_system || return 1
+            remove_vless_xhttp_finalmask_config
+            ;;
+        *)
+            err "[失败] 未知 xhttp 参数: $action"
+            show_xhttp_usage
+            return 1
+            ;;
+    esac
+}
+
 run_forward_command() {
     run_tunnel_command "$@"
 }
@@ -4916,8 +7577,21 @@ Xray-OneClick 命令帮助
 
 常用命令:
   ike
+  ike preflight
   ike view
   ike view doctor
+  ike xray version
+  ike xray upgrade --dry-run
+  ike xray upgrade --version vX.Y.Z --restart
+  ike doctor all
+  ike doctor preflight
+  ike doctor proxy
+  ike doctor reality
+  ike doctor xhttp
+  ike smoke reality
+  ike smoke xhttp --restart
+  ike export report --output /root/xray-report.txt
+  ike export clients --output /root/xray-clients.txt
   ike update
   ike backup
   ike endpoint show
@@ -4928,14 +7602,37 @@ Xray-OneClick 命令帮助
   ike config test
   ike config edit
   ike service status
+  ike service install
   ike service restart
+  ike service logs
+  ike service repair
   ike logs
+  ike migrate --dry-run
+  ike migrate
+  ike uninstall --dry-run
+  ike uninstall --keep-config
+  ike uninstall --purge --yes
   ike cnblock
   ike cnblock basic
   ike cnblock enhanced
   ike cnblock off
   ike safety enhanced on
   ike safety enhanced off
+  ike reality install
+  ike reality install --dry-run
+  ike reality install --port 30004 --defender-port 40004 --sni www.abmindustriesgroup.com
+  ike reality install --port 30004 --defender-port 40004 --sni www.abmindustriesgroup.com --dry-run
+  ike reality show
+  ike reality remove
+  ike xhttp install
+  ike xhttp install --dry-run
+  ike xhttp install --port 30005 --path /api/test --finalmask on
+  ike xhttp install --port 30005 --path /api/test --finalmask off
+  ike xhttp install --port 30005 --path /api/test --finalmask on --dry-run
+  ike xhttp show
+  ike xhttp remove
+  ike view reality
+  ike view xhttp
   ike tunnel list
   ike tunnel add
   ike tunnel add safe
@@ -5001,13 +7698,19 @@ main() {
             show_version
             return 0
             ;;
-        "" | view | update | backup | endpoint | config | service | logs | cnblock | safety | tunnel | forward | bootstrap) ;;
+        "" | preflight | view | doctor | smoke | export | xray | migrate | uninstall | update | backup | endpoint | config | service | logs | cnblock | safety | tunnel | forward | reality | xhttp | bootstrap) ;;
         *)
             err "[失败] 未知命令: $1"
             echo "运行 ike help 查看可用命令。"
             return 1
             ;;
     esac
+
+    if [[ "${1:-}" == "preflight" ]]; then
+        shift
+        run_preflight_command "$@"
+        return $?
+    fi
 
     ensure_root
     check_os
@@ -5018,9 +7721,37 @@ main() {
         "")
             show_menu
             ;;
+        preflight)
+            shift
+            run_preflight_command "$@"
+            ;;
         view)
             shift
             run_view_command "$@"
+            ;;
+        xray)
+            shift
+            run_xray_command "$@"
+            ;;
+        migrate)
+            shift
+            run_migrate_command "$@"
+            ;;
+        uninstall)
+            shift
+            run_uninstall_command "$@"
+            ;;
+        doctor)
+            shift
+            run_doctor_command "$@"
+            ;;
+        smoke)
+            shift
+            run_smoke_command "$@"
+            ;;
+        export)
+            shift
+            run_export_command "$@"
             ;;
         update)
             update_xray_core
@@ -5035,7 +7766,8 @@ main() {
             run_config_command "${2:-path}"
             ;;
         service)
-            run_service_command "${2:-status}"
+            shift
+            run_service_command "$@"
             ;;
         logs)
             run_logs_command
@@ -5053,6 +7785,14 @@ main() {
         forward)
             shift
             run_forward_command "$@"
+            ;;
+        reality)
+            shift
+            run_reality_command "$@"
+            ;;
+        xhttp)
+            shift
+            run_xhttp_command "$@"
             ;;
         bootstrap)
             run_bootstrap_command
