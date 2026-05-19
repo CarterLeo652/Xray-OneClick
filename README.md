@@ -5,16 +5,17 @@
 ![Core](https://img.shields.io/badge/Core-Xray-blue)
 ![License](https://img.shields.io/badge/License-GPLv3-orange)
 
-> `0.2.0-beta.2` 是实机反馈修复版，仍不标记为稳定版。本版修复新版 Xray `x25519` 输出解析，并调整主菜单顺序，让 Reality / XHTTP 紧挨 VLESS Encryption。Reality 相对稳定，XHTTP + FinalMask 仍是实验功能，仍需真实 VPS 和客户端测试，不承诺所有客户端都兼容 FinalMask / `fm` 分享链接。本项目仅供学习和合法网络测试使用，请遵守所在地法律法规和服务商条款。
+> `0.2.0-beta.3` 是 Reality x25519 解析二次修复版，仍不标记为稳定版。本版修复 Xray 26.3.27 `Password (PublicKey)` 输出解析，并保留 beta.2 的菜单顺序调整。Reality 相对稳定，XHTTP + FinalMask 仍是实验功能，仍需真实 VPS 和客户端测试，不承诺所有客户端都兼容 FinalMask / `fm` 分享链接。本项目仅供学习和合法网络测试使用，请遵守所在地法律法规和服务商条款。
 
 ## 版本状态
 
-- 当前版本：`0.2.0-beta.2`
-- 定位：实机反馈修复版，不是 stable。
+- 当前版本：`0.2.0-beta.3`
+- 定位：Reality x25519 解析二次修复版，不是 stable。
 - Reality：默认 TCP + REALITY + Vision flow，适合进入 VPS 实机烟测。
 - XHTTP + FinalMask：实验能力，客户端兼容性取决于 Xray-core / 客户端内核版本。
 - 升级建议：从 alpha.1 / alpha.2 / alpha.3 / alpha.4 升级后先运行 `ike doctor all`，再运行 `ike migrate --dry-run`。
-- beta.2 修复点：Xray 26.3.x 实机测试中，`xray x25519` 可能输出 `PrivateKey` / `Password` / `Hash32` 新格式；脚本现在会把 `PrivateKey` 用作服务端 `privateKey`，把 `Password` 映射为客户端 `publicKey`，忽略 `Hash32`。
+- beta.2 修复点：Xray 26.3.x 实机测试中，`xray x25519` 可能输出 `PrivateKey` / `Password` / `Hash32` 新格式；脚本会把 `PrivateKey` 用作服务端 `privateKey`，把 `Password` 映射为客户端 `publicKey`，忽略 `Hash32`。
+- beta.3 修复点：实机 Xray 26.3.27 输出为 `Password (PublicKey)`，beta.3 已兼容带括号 label 的 publicKey 解析。
 
 ## beta.2 实机反馈记录
 
@@ -26,7 +27,16 @@
 - SOCKS5 可安装。
 - XHTTP + FinalMask 可写入配置并成功重启 systemd。
 
-beta.1 的 Reality 失败点是新版 `xray x25519` 输出解析，beta.2 已修复。Reality 仍需用户复测客户端连通性；XHTTP + FinalMask 虽然服务端写入成功，客户端兼容性仍需继续测试。
+beta.1 的 Reality 失败点是新版 `xray x25519` 输出解析，beta.2 修复了 `Password`，beta.3 继续修复 `Password (PublicKey)`。Reality 仍需用户复测客户端连通性；XHTTP + FinalMask 虽然服务端写入成功，客户端兼容性仍需继续测试。
+
+如果 Reality 仍然失败，请运行：
+
+```bash
+xray x25519
+ike doctor reality-key
+```
+
+排障时请贴脱敏输出，不要贴完整 privateKey。
 
 ## 适合谁使用
 

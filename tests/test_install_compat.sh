@@ -299,7 +299,7 @@ JSON
     assert_contains "$output" "ike xray" "help missing xray"
     assert_contains "$output" "ike migrate" "help missing migrate"
     output="$(show_version)"
-    assert_contains "$output" "0.2.0-beta.2" "version output mismatch"
+    assert_contains "$output" "0.2.0-beta.3" "version output mismatch"
     cat >"$BIN_PATH" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$1" == "version" ]]; then

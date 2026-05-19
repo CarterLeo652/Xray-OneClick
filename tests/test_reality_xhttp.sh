@@ -183,7 +183,7 @@ case "$1" in
         ;;
       *)
         echo "PrivateKey: reality-private-key"
-        echo "Password: reality-public-key"
+        echo "Password (PublicKey): reality-public-key"
         echo "Hash32: reality-hash32-value"
         ;;
     esac
@@ -350,14 +350,32 @@ test_x25519_parser_formats() {
     parse_xray_x25519_output $'\nPrivateKey: new-private\nPassword: new-public\nHash32: hash-value\n' || fail "new x25519 format did not parse"
     [[ "$REALITY_PRIVATE_KEY" == "new-private" && "$REALITY_PUBLIC_KEY" == "new-public" && "$REALITY_X25519_HASH32" == "hash-value" ]] || fail "new x25519 format parsed wrong values"
 
+    parse_xray_x25519_output $'PrivateKey: real-private\nPassword (PublicKey): real-public\nHash32: real-hash\n' || fail "real x25519 format did not parse"
+    [[ "$REALITY_PRIVATE_KEY" == "real-private" && "$REALITY_PUBLIC_KEY" == "real-public" && "$REALITY_X25519_HASH32" == "real-hash" ]] || fail "real x25519 format parsed wrong values"
+
+    parse_xray_x25519_output $'PrivateKey: real2-private\nPassword(PublicKey): real2-public\nHash32: real2-hash\n' || fail "no-space real x25519 format did not parse"
+    [[ "$REALITY_PRIVATE_KEY" == "real2-private" && "$REALITY_PUBLIC_KEY" == "real2-public" ]] || fail "no-space real x25519 format parsed wrong values"
+
     parse_xray_x25519_output $'private key : lower-private\nPUBLICKEY: upper-public\n' || fail "mixed case x25519 format did not parse"
     [[ "$REALITY_PRIVATE_KEY" == "lower-private" && "$REALITY_PUBLIC_KEY" == "upper-public" ]] || fail "mixed case x25519 format parsed wrong values"
+
+    parse_xray_x25519_output $'private key: lower-private\npassword (publickey): lower-public\n' || fail "lowercase password publickey format did not parse"
+    [[ "$REALITY_PRIVATE_KEY" == "lower-private" && "$REALITY_PUBLIC_KEY" == "lower-public" ]] || fail "lowercase password publickey format parsed wrong values"
+
+    parse_xray_x25519_output $'unknown\n\nPrivateKey: unknown-private\nPassword (PublicKey): unknown-public\nHash32: unknown-hash\n' || fail "unknown line x25519 format did not parse"
+    [[ "$REALITY_PRIVATE_KEY" == "unknown-private" && "$REALITY_PUBLIC_KEY" == "unknown-public" ]] || fail "unknown line x25519 format parsed wrong values"
 
     if parse_xray_x25519_output $'PrivateThing: nope\nHash32: hash-only\n'; then
         fail "unknown x25519 format should fail"
     fi
+    if parse_xray_x25519_output $'PrivateKey: only-private\nHash32: hash-only\n'; then
+        fail "x25519 output missing public should fail"
+    fi
+    if parse_xray_x25519_output $'Password (PublicKey): only-public\nHash32: hash-only\n'; then
+        fail "x25519 output missing private should fail"
+    fi
 
-    output="$(print_masked_x25519_output $'PrivateKey: very-secret-private-key\nPassword: public-value\n')"
+    output="$(print_masked_x25519_output $'PrivateKey: very-secret-private-key\nPassword (PublicKey): public-value\n')"
     assert_output_not_contains "$output" "very-secret-private-key" "masked x25519 output leaked private key"
 }
 
@@ -370,7 +388,8 @@ test_reality_generate_keys_new_xray_format() {
     generate_reality_keys() { original_generate_reality_keys; }
     configure_reality "dry-run" >/dev/null || fail "configure_reality did not parse new x25519 output"
     install_reality >/dev/null || fail "reality install with new x25519 output failed"
-    assert_jq "$STATE_FILE" '.vless_reality.private_key == "reality-private-key" and .vless_reality.public_key == "reality-public-key" and (.vless_reality.link | contains("pbk=reality-public-key"))' "reality state did not use Password as publicKey"
+    assert_jq "$CONFIG_FILE" '(.inbounds[]? | select(.tag == "vless+tcp+reality").streamSettings.realitySettings.privateKey) == "reality-private-key"' "reality config did not use parsed privateKey"
+    assert_jq "$STATE_FILE" '.vless_reality.private_key == "reality-private-key" and .vless_reality.public_key == "reality-public-key" and .vless_reality.hash32 == "reality-hash32-value" and (.vless_reality.link | contains("pbk=reality-public-key"))' "reality state did not use Password(PublicKey) as publicKey"
     output="$(print_reality_result "show" 2>&1)"
     assert_output_not_contains "$output" "reality-private-key" "reality show leaked private key after new x25519 parse"
     generate_reality_keys() { stub_generate_reality_keys; }

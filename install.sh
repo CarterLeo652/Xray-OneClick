@@ -19,7 +19,7 @@ LEGACY_SHORTCUT_PATH="/usr/local/bin/sb"
 INSTALLER_DIR="/usr/local/share/ike"
 INSTALLER_PATH="${INSTALLER_DIR}/install.sh"
 SCRIPT_NAME="Xray-OneClick"
-SCRIPT_VERSION="0.2.0-beta.2"
+SCRIPT_VERSION="0.2.0-beta.3"
 REPO_URL="https://github.com/ike-sh/Xray-OneClick"
 RAW_SCRIPT_URL="https://raw.githubusercontent.com/ike-sh/Xray-OneClick/main/install.sh"
 XRAY_RELEASE_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
@@ -1722,6 +1722,8 @@ normalize_x25519_key_name() {
     key="${key//[[:space:]]/}"
     key="${key//_/}"
     key="${key//-/}"
+    key="${key//(/}"
+    key="${key//)/}"
     printf '%s' "${key,,}"
 }
 
@@ -1770,26 +1772,28 @@ print_masked_x25519_output() {
 
 parse_xray_x25519_output() {
     local output="$1"
-    local line raw_key key value private="" public="" hash32=""
+    local line raw_key key key_base key_full value private="" public="" hash32=""
+
+    REALITY_X25519_HASH32=""
 
     while IFS= read -r line; do
         line="${line//$'\r'/}"
         [[ "$line" == *:* ]] || continue
-        raw_key="${line%%:*}"
+        raw_key="$(trim_x25519_value "${line%%:*}")"
         value="$(trim_x25519_value "${line#*:}")"
-        key="$(normalize_x25519_key_name "$raw_key")"
+        key_base="$(printf '%s' "$raw_key" | sed -E 's/[[:space:]]*\([^)]*\)//g')"
+        key="$(normalize_x25519_key_name "$key_base")"
+        key_full="$(normalize_x25519_key_name "$raw_key")"
         [[ -n "$value" ]] || continue
-        case "$key" in
-            privatekey)
-                private="$value"
-                ;;
-            publickey | password)
-                public="$value"
-                ;;
-            hash32)
-                hash32="$value"
-                ;;
-        esac
+        if [[ "$key_full" == *privatekey* || "$key" == "private" ]]; then
+            private="$value"
+        elif [[ "$key_full" == *publickey* ]]; then
+            public="$value"
+        elif [[ "$key" == "password" || "$key_full" == password* ]]; then
+            public="$value"
+        elif [[ "$key_full" == *hash32* ]]; then
+            hash32="$value"
+        fi
     done <<<"$output"
 
     [[ -n "$private" && -n "$public" ]] || return 1
@@ -2032,9 +2036,11 @@ build_reality_share_link() {
 state_set_reality() {
     init_state
     local tmp link timestamp clients_empty flow
+    local hash32
 
     flow="$REALITY_FLOW_DEFAULT"
     [[ ${REALITY_FLOW+x} ]] && flow="$REALITY_FLOW"
+    hash32="${REALITY_X25519_HASH32:-}"
     link="$(build_reality_share_link || true)"
     timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     clients_empty="false"
@@ -2049,6 +2055,7 @@ state_set_reality() {
         --arg default_short_id "$REALITY_DEFAULT_SHORT_ID" \
         --arg server_name "$REALITY_SERVER_NAME" \
         --arg flow "$flow" \
+        --arg hash32 "$hash32" \
         --arg created_at "$timestamp" \
         --arg link "$link" \
         --arg clients_empty "$clients_empty" '
@@ -2066,7 +2073,8 @@ state_set_reality() {
           "empty_clients": ($clients_empty == "true"),
           "created_at": $created_at,
           "link": $link
-        }
+        } |
+        if $hash32 != "" then .vless_reality.hash32 = $hash32 else . end
        ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
     rm -f "$tmp"
     ensure_config_security
@@ -6697,8 +6705,8 @@ doctor_xray_x25519() {
     old_hash="${REALITY_X25519_HASH32:-}"
     if parse_xray_x25519_output "$output"; then
         diag_ok "xray x25519 输出可解析"
-        diag_info "PrivateKey: $(mask_x25519_value "$REALITY_PRIVATE_KEY")"
-        diag_info "PublicKey/Password: $(mask_x25519_value "$REALITY_PUBLIC_KEY")"
+        diag_ok "privateKey 已识别（脱敏）: $(mask_x25519_value "$REALITY_PRIVATE_KEY")"
+        diag_ok "publicKey/pbk 已识别（脱敏）: $(mask_x25519_value "$REALITY_PUBLIC_KEY")"
         [[ -n "${REALITY_X25519_HASH32:-}" ]] && diag_info "Hash32: $(mask_x25519_value "$REALITY_X25519_HASH32")"
     else
         diag_fail "当前 Xray x25519 输出格式未被识别"
