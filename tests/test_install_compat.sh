@@ -298,8 +298,9 @@ JSON
     assert_contains "$output" "ike preflight" "help missing preflight"
     assert_contains "$output" "ike xray" "help missing xray"
     assert_contains "$output" "ike migrate" "help missing migrate"
+    assert_contains "$output" "ike fullstack install" "help missing fullstack"
     output="$(show_version)"
-    assert_contains "$output" "1.0.0" "version output mismatch"
+    assert_contains "$output" "1.1.1" "version output mismatch"
     cat >"$BIN_PATH" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$1" == "version" ]]; then

@@ -341,6 +341,52 @@ install_xhttp_fixture() {
     install_vless_xhttp_finalmask >/dev/null || fail "xhttp install failed"
 }
 
+set_advanced_vars() {
+    local kind="$1"
+    local finalmask="${2:-true}"
+
+    case "$kind" in
+        xhttp-reality)
+            ADVANCED_PORT="30006"
+            ADVANCED_PATH="/api/test"
+            ;;
+        enc-reality)
+            ADVANCED_PORT="30007"
+            ADVANCED_PATH=""
+            ;;
+        fullstack)
+            ADVANCED_PORT="30008"
+            ADVANCED_PATH="/api/test"
+            ;;
+        *) fail "unknown advanced fixture kind: $kind" ;;
+    esac
+    ADVANCED_SERVER_NAME="www.abmindustriesgroup.com"
+    ADVANCED_UUID="55555555-5555-4555-8555-555555555555"
+    ADVANCED_SPIDER_X="/"
+    ADVANCED_DRY_RUN="false"
+    ADVANCED_FINALMASK_ENABLED="$finalmask"
+    ADVANCED_FINALMASK_JSON="$(default_finalmask_json)"
+    REALITY_PRIVATE_KEY="reality-private-key"
+    REALITY_PUBLIC_KEY="reality-public-key"
+    REALITY_DEFAULT_SHORT_ID="aa"
+    REALITY_SHORT_IDS_JSON='["aa","bbbb","cccccc","dddddddd","eeeeeeeeee","ffffffffffff","11111111111111","2222222222222222"]'
+    VLESS_DECRYPTION="server-dec-advanced"
+    VLESS_ENCRYPTION="client-enc-advanced"
+    VLESS_AUTH="x25519"
+    VLESS_MODE="basic"
+    VLESS_ENC_METHOD="native"
+    VLESS_CLIENT_RTT="0rtt"
+    VLESS_SERVER_TICKET="600s"
+}
+
+install_advanced_fixture() {
+    local kind="$1"
+    local finalmask="${2:-true}"
+
+    set_advanced_vars "$kind" "$finalmask"
+    install_advanced_profile "$kind" >/dev/null || fail "$kind install failed"
+}
+
 test_x25519_parser_formats() {
     local output
 
@@ -419,8 +465,11 @@ test_menu_order_text() {
     assert_output_contains "$output" "5. 安装 VLESS TCP REALITY" "menu missing Reality at option 5"
     assert_output_contains "$output" "6. 安装 VLESS Encryption + XHTTP + FinalMask" "menu missing XHTTP at option 6"
     assert_output_contains "$output" "7. 安装 SOCKS5 代理" "menu missing SOCKS5 at option 7"
+    assert_output_contains "$output" "16. 高级协议组合" "menu missing advanced profiles at option 16"
+    assert_output_contains "$output" "17. 退出" "menu missing exit at option 17"
     assert_output_not_contains "$output" "14. 安装 VLESS TCP REALITY" "menu still has Reality at option 14"
     assert_output_not_contains "$output" "15. 安装 VLESS Encryption + XHTTP + FinalMask" "menu still has XHTTP at option 15"
+    assert_output_not_contains "$output" "16. 退出" "menu still exits at option 16"
 }
 
 test_reality_jq_write() {
@@ -528,20 +577,31 @@ test_remove_reality_and_xhttp_are_scoped() {
     setup_fixture
     install_reality_fixture
     install_xhttp_fixture "true"
+    install_advanced_fixture "xhttp-reality"
+    install_advanced_fixture "enc-reality"
+    install_advanced_fixture "fullstack" "true"
 
     remove_reality_config >/dev/null || fail "reality remove failed"
     assert_jq "$CONFIG_FILE" '([.inbounds[]? | select(.tag == "vless+tcp+reality" or .tag == "reality-defender")] | length) == 0' "reality inbounds remained"
     assert_jq "$CONFIG_FILE" '([.routing.rules[]? | select(((.inboundTag // []) | index("reality-defender")) != null)] | length) == 0' "reality routing remained"
     assert_jq "$STATE_FILE" 'has("vless_reality") | not' "reality state remained"
-    assert_jq "$CONFIG_FILE" 'any(.inbounds[]?; .tag == "ss2022-in") and any(.inbounds[]?; .tag == "vless-enc-in") and any(.inbounds[]?; .tag == "socks-in") and any(.inbounds[]?; .tag == "tunnel-31000-443") and any(.inbounds[]?; .tag == "vless-enc-xhttp-finalmask-in")' "reality remove affected other protocols"
+    assert_jq "$CONFIG_FILE" 'any(.inbounds[]?; .tag == "ss2022-in") and any(.inbounds[]?; .tag == "vless-enc-in") and any(.inbounds[]?; .tag == "socks-in") and any(.inbounds[]?; .tag == "tunnel-31000-443") and any(.inbounds[]?; .tag == "vless-enc-xhttp-finalmask-in") and any(.inbounds[]?; .tag == "vless+xhttp+reality") and any(.inbounds[]?; .tag == "vless+enc+reality") and any(.inbounds[]?; .tag == "vless+enc+xhttp+reality+finalmask")' "reality remove affected other protocols"
+    assert_jq "$STATE_FILE" 'has("vless_xhttp_reality") and has("vless_enc_reality") and has("vless_fullstack")' "reality remove affected advanced state"
     assert_jq "$CONFIG_FILE" 'any(.routing.rules[]?; ((.inboundTag // []) | index("tunnel-31000-443")) != null)' "reality remove affected tunnel routing"
 
     install_reality_fixture
     remove_vless_xhttp_finalmask_config >/dev/null || fail "xhttp remove failed"
     assert_jq "$CONFIG_FILE" '([.inbounds[]? | select(.tag == "vless-enc-xhttp-finalmask-in")] | length) == 0' "xhttp inbound remained"
     assert_jq "$STATE_FILE" 'has("vless_xhttp_finalmask") | not' "xhttp state remained"
-    assert_jq "$CONFIG_FILE" 'any(.inbounds[]?; .tag == "ss2022-in") and any(.inbounds[]?; .tag == "vless-enc-in") and any(.inbounds[]?; .tag == "socks-in") and any(.inbounds[]?; .tag == "tunnel-31000-443") and any(.inbounds[]?; .tag == "vless+tcp+reality") and any(.inbounds[]?; .tag == "reality-defender")' "xhttp remove affected other protocols"
+    assert_jq "$CONFIG_FILE" 'any(.inbounds[]?; .tag == "ss2022-in") and any(.inbounds[]?; .tag == "vless-enc-in") and any(.inbounds[]?; .tag == "socks-in") and any(.inbounds[]?; .tag == "tunnel-31000-443") and any(.inbounds[]?; .tag == "vless+tcp+reality") and any(.inbounds[]?; .tag == "reality-defender") and any(.inbounds[]?; .tag == "vless+xhttp+reality") and any(.inbounds[]?; .tag == "vless+enc+reality") and any(.inbounds[]?; .tag == "vless+enc+xhttp+reality+finalmask")' "xhttp remove affected other protocols"
     assert_jq "$STATE_FILE" 'has("vless_reality")' "xhttp remove affected reality state"
+    assert_jq "$STATE_FILE" 'has("vless_xhttp_reality") and has("vless_enc_reality") and has("vless_fullstack")' "xhttp remove affected advanced state"
+
+    remove_inbound "$VLESS_TAG"
+    state_delete_key "vless_encryption"
+    apply_config >/dev/null || fail "base vless remove apply failed"
+    assert_jq "$CONFIG_FILE" 'any(.inbounds[]?; .tag == "vless+enc+reality") and any(.inbounds[]?; .tag == "vless+enc+xhttp+reality+finalmask")' "base vless remove affected advanced encryption combos"
+    assert_jq "$STATE_FILE" 'has("vless_enc_reality") and has("vless_fullstack")' "base vless remove affected advanced state"
     cleanup_fixture
 }
 
@@ -729,6 +789,173 @@ test_failure_hints_do_not_update_state() {
     cleanup_fixture
 }
 
+test_advanced_profiles_write_and_links() {
+    local link fm
+
+    setup_fixture
+    install_advanced_fixture "xhttp-reality"
+    assert_jq "$CONFIG_FILE" 'any(.inbounds[]?; .tag == "vless+xhttp+reality" and .protocol == "vless" and .settings.decryption == "none" and .streamSettings.network == "xhttp" and .streamSettings.security == "reality" and .streamSettings.xhttpSettings.path == "/api/test" and .streamSettings.realitySettings.privateKey == "reality-private-key")' "xhttp-reality inbound invalid"
+    assert_jq "$CONFIG_FILE" '(.inbounds[]? | select(.tag == "vless+xhttp+reality").settings.clients[0] | has("flow") | not)' "xhttp-reality should not write flow"
+    assert_jq "$STATE_FILE" '.vless_xhttp_reality.public_key == "reality-public-key" and (.vless_xhttp_reality.link | contains("type=xhttp")) and (.vless_xhttp_reality.link | contains("security=reality")) and (.vless_xhttp_reality.link | contains("path=%2Fapi%2Ftest")) and (.vless_xhttp_reality.link | contains("pbk=reality-public-key"))' "xhttp-reality state/link invalid"
+
+    install_advanced_fixture "enc-reality"
+    assert_jq "$CONFIG_FILE" 'any(.inbounds[]?; .tag == "vless+enc+reality" and .settings.decryption == "server-dec-advanced" and .streamSettings.network == "tcp" and .streamSettings.security == "reality")' "enc-reality inbound invalid"
+    assert_jq "$STATE_FILE" '.vless_enc_reality.encryption == "client-enc-advanced" and (.vless_enc_reality.link | contains("type=tcp")) and (.vless_enc_reality.link | contains("encryption=client-enc-advanced")) and (.vless_enc_reality.link | contains("pbk=reality-public-key"))' "enc-reality state/link invalid"
+
+    install_advanced_fixture "fullstack" "false"
+    assert_jq "$CONFIG_FILE" 'any(.inbounds[]?; .tag == "vless+enc+xhttp+reality+finalmask" and .settings.decryption == "server-dec-advanced" and .streamSettings.network == "xhttp" and .streamSettings.security == "reality" and .streamSettings.xhttpSettings.path == "/api/test")' "fullstack inbound invalid"
+    assert_jq "$CONFIG_FILE" '(.inbounds[]? | select(.tag == "vless+enc+xhttp+reality+finalmask").streamSettings | has("finalmask") | not)' "fullstack finalmask off wrote finalmask"
+    assert_jq "$STATE_FILE" '.vless_fullstack.finalmask_enabled == false and (.vless_fullstack.link | contains("fm=") | not)' "fullstack finalmask off state/link invalid"
+
+    install_advanced_fixture "fullstack" "true"
+    assert_jq "$CONFIG_FILE" '(.inbounds[]? | select(.tag == "vless+enc+xhttp+reality+finalmask").streamSettings.finalmask.tcp[0].type) == "fragment"' "fullstack finalmask on missing template"
+    assert_jq "$STATE_FILE" '.vless_fullstack.finalmask_enabled == true and (.vless_fullstack.link | contains("fm=")) and (.vless_fullstack.link | contains("encryption=client-enc-advanced")) and (.vless_fullstack.link | contains("pbk=reality-public-key"))' "fullstack finalmask on link invalid"
+    link="$(jq -r '.vless_fullstack.link' "$STATE_FILE")"
+    fm="${link#*fm=}"
+    fm="${fm%%#*}"
+    [[ "$fm" != *"{"* && "$fm" != *"}"* && "$fm" != *" "* && "$fm" != *"\""* ]] || fail "fullstack fm contains raw JSON characters"
+    cleanup_fixture
+}
+
+test_advanced_remove_repeat_and_dry_run() {
+    local before_config before_state after_config after_state output status
+
+    setup_fixture
+    install_reality_fixture
+    install_xhttp_fixture "true"
+    install_advanced_fixture "xhttp-reality"
+    install_advanced_fixture "enc-reality"
+    install_advanced_fixture "fullstack" "true"
+
+    remove_advanced_profile_config "xhttp-reality" >/dev/null || fail "xhttp-reality remove failed"
+    assert_jq "$CONFIG_FILE" '([.inbounds[]? | select(.tag == "vless+xhttp+reality")] | length) == 0' "xhttp-reality inbound remained"
+    assert_jq "$STATE_FILE" 'has("vless_xhttp_reality") | not' "xhttp-reality state remained"
+    assert_jq "$CONFIG_FILE" 'any(.inbounds[]?; .tag == "vless-enc-xhttp-finalmask-in") and any(.inbounds[]?; .tag == "vless+tcp+reality") and any(.inbounds[]?; .tag == "vless+enc+reality") and any(.inbounds[]?; .tag == "vless+enc+xhttp+reality+finalmask")' "xhttp-reality remove affected other protocols"
+
+    remove_advanced_profile_config "enc-reality" >/dev/null || fail "enc-reality remove failed"
+    assert_jq "$CONFIG_FILE" '([.inbounds[]? | select(.tag == "vless+enc+reality")] | length) == 0' "enc-reality inbound remained"
+    assert_jq "$STATE_FILE" 'has("vless_enc_reality") | not' "enc-reality state remained"
+    assert_jq "$CONFIG_FILE" 'any(.inbounds[]?; .tag == "vless+tcp+reality") and any(.inbounds[]?; .tag == "vless-enc-in")' "enc-reality remove affected base protocols"
+
+    remove_advanced_profile_config "fullstack" >/dev/null || fail "fullstack remove failed"
+    assert_jq "$CONFIG_FILE" '([.inbounds[]? | select(.tag == "vless+enc+xhttp+reality+finalmask")] | length) == 0' "fullstack inbound remained"
+    assert_jq "$STATE_FILE" 'has("vless_fullstack") | not' "fullstack state remained"
+    assert_jq "$CONFIG_FILE" 'any(.inbounds[]?; .tag == "vless-enc-xhttp-finalmask-in") and any(.inbounds[]?; .tag == "vless+tcp+reality")' "fullstack remove affected other protocols"
+
+    install_advanced_fixture "xhttp-reality"
+    install_advanced_fixture "xhttp-reality"
+    assert_jq "$CONFIG_FILE" '([.inbounds[]? | select(.tag == "vless+xhttp+reality")] | length) == 1' "duplicate xhttp-reality inbound"
+    install_advanced_fixture "enc-reality"
+    install_advanced_fixture "enc-reality"
+    assert_jq "$CONFIG_FILE" '([.inbounds[]? | select(.tag == "vless+enc+reality")] | length) == 1' "duplicate enc-reality inbound"
+    install_advanced_fixture "fullstack" "true"
+    install_advanced_fixture "fullstack" "false"
+    assert_jq "$CONFIG_FILE" '([.inbounds[]? | select(.tag == "vless+enc+xhttp+reality+finalmask")] | length) == 1' "duplicate fullstack inbound"
+    assert_jq "$CONFIG_FILE" '([.routing.rules[]? | select(((.inboundTag // []) | index("reality-defender")) != null)] | length) == 2' "advanced repeat install duplicated reality defender routing"
+
+    before_config="$(sha256sum "$CONFIG_FILE" | awk '{print $1}')"
+    before_state="$(sha256sum "$STATE_FILE" | awk '{print $1}')"
+    set_advanced_vars "fullstack" "true"
+    ADVANCED_DRY_RUN="true"
+    output="$(install_advanced_profile "fullstack" 2>&1)" || fail "fullstack dry-run failed"
+    assert_output_contains "$output" "dry-run 预览" "fullstack dry-run output missing"
+    assert_output_contains "$output" "FinalMask: on" "fullstack dry-run missing finalmask"
+    assert_output_not_contains "$output" "reality-private-key" "fullstack dry-run leaked private key"
+    after_config="$(sha256sum "$CONFIG_FILE" | awk '{print $1}')"
+    after_state="$(sha256sum "$STATE_FILE" | awk '{print $1}')"
+    [[ "$before_config" == "$after_config" ]] || fail "advanced dry-run modified config"
+    [[ "$before_state" == "$after_state" ]] || fail "advanced dry-run modified state"
+
+    before_state="$(sha256sum "$STATE_FILE" | awk '{print $1}')"
+    set_advanced_vars "fullstack" "true"
+    TEST_APPLY_FAIL="true"
+    output="$(install_advanced_profile "fullstack" 2>&1)"
+    status=$?
+    TEST_APPLY_FAIL="false"
+    [[ "$status" -ne 0 ]] || fail "fullstack install unexpectedly succeeded with apply failure"
+    assert_output_contains "$output" "--finalmask off" "fullstack failure missing finalmask off hint"
+    after_state="$(sha256sum "$STATE_FILE" | awk '{print $1}')"
+    [[ "$before_state" == "$after_state" ]] || fail "fullstack failure updated state"
+    cleanup_fixture
+}
+
+test_advanced_view_doctor_smoke_export() {
+    local output
+
+    setup_fixture
+    install_advanced_fixture "xhttp-reality"
+    install_advanced_fixture "enc-reality"
+    install_advanced_fixture "fullstack" "true"
+
+    output="$(run_view_command xhttp-reality 2>&1)"
+    assert_output_contains "$output" "VLESS XHTTP + REALITY" "view xhttp-reality missing title"
+    assert_output_contains "$output" "PublicKey: reality-public-key" "view xhttp-reality missing public key"
+    assert_output_not_contains "$output" "reality-private-key" "view xhttp-reality leaked private key"
+
+    output="$(run_view_command enc-reality 2>&1)"
+    assert_output_contains "$output" "VLESS Encryption: client-enc-advanced" "view enc-reality missing encryption"
+    assert_output_not_contains "$output" "server-dec-advanced" "view enc-reality leaked decryption"
+
+    output="$(run_view_command fullstack 2>&1)"
+    assert_output_contains "$output" "fm=" "view fullstack missing fm"
+    assert_output_contains "$output" "FullStack 是最高级组合" "view fullstack missing compatibility hint"
+
+    output="$(doctor_advanced_profile "fullstack" 2>&1)"
+    assert_output_contains "$output" "inbound 协议/传输/REALITY 配置正确" "doctor fullstack missing inbound check"
+    assert_output_contains "$output" "fm 参数已 URL 编码" "doctor fullstack missing fm check"
+    assert_output_not_contains "$output" "server-dec-advanced" "doctor fullstack leaked decryption"
+    assert_output_not_contains "$output" "reality-private-key" "doctor fullstack leaked private key"
+
+    TEST_RESTART_COUNT=0
+    output="$(smoke_advanced_profile "xhttp-reality" false 2>&1)"
+    assert_output_contains "$output" "默认不自动 restart" "advanced smoke missing default restart policy"
+    [[ "$TEST_RESTART_COUNT" -eq 0 ]] || fail "advanced smoke restarted without --restart"
+    smoke_advanced_profile "xhttp-reality" true >/dev/null 2>&1 || true
+    [[ "$TEST_RESTART_COUNT" -eq 1 ]] || fail "advanced smoke --restart did not call restart"
+
+    output="$(render_export_clients 2>&1)"
+    assert_output_contains "$output" "Xray-FullStack" "export clients missing fullstack link"
+    assert_output_contains "$output" "Xray-XHTTP-Reality" "export clients missing xhttp-reality link"
+    assert_output_not_contains "$output" "reality-private-key" "export clients leaked advanced private key"
+    assert_output_not_contains "$output" "server-dec-advanced" "export clients leaked advanced decryption"
+
+    output="$(render_export_report 2>&1)"
+    assert_output_contains "$output" "高级协议组合摘要" "export report missing advanced summary"
+    assert_output_not_contains "$output" "reality-private-key" "export report leaked advanced private key"
+    assert_output_not_contains "$output" "server-dec-advanced" "export report leaked advanced decryption"
+
+    output="$(show_help)"
+    assert_output_contains "$output" "ike xhttp-reality install" "help missing xhttp-reality"
+    assert_output_contains "$output" "ike enc-reality install" "help missing enc-reality"
+    assert_output_contains "$output" "ike fullstack install" "help missing fullstack"
+    cleanup_fixture
+}
+
+test_advanced_uninstalled_show_doctor_smoke_are_friendly() {
+    local output
+
+    setup_fixture
+    output="$(print_advanced_profile_result "xhttp-reality" "show" 2>&1)" || fail "uninstalled xhttp-reality show failed"
+    assert_output_contains "$output" "未安装" "xhttp-reality show was not friendly"
+    output="$(doctor_advanced_profile "enc-reality" 2>&1)" || fail "uninstalled enc-reality doctor failed"
+    assert_output_contains "$output" "未安装，跳过专项检查" "enc-reality doctor did not skip"
+    output="$(smoke_advanced_profile "fullstack" false 2>&1)" || fail "uninstalled fullstack smoke failed"
+    assert_output_contains "$output" "未安装，跳过 smoke" "fullstack smoke did not skip"
+    output="$(render_export_clients 2>&1)" || fail "export clients without advanced failed"
+    assert_output_not_contains "$output" "jq:" "export clients printed jq error"
+    output="$(render_export_report 2>&1)" || fail "export report without advanced failed"
+    assert_output_contains "$output" "XHTTP-Reality: 未安装" "export report did not mark xhttp-reality uninstalled"
+    cleanup_fixture
+}
+
+test_readme_final_user_doc_guard() {
+    local output
+
+    if output="$(grep -E 'scripts/test\.sh|tests/|shellcheck|shfmt|mock|单元测试|测试覆盖|开发测试' "${ROOT_DIR}/README.md" 2>&1)"; then
+        fail "README contains development test content: $output"
+    fi
+}
+
 run_test() {
     local name="$1"
     printf 'test: %s\n' "$name"
@@ -753,5 +980,10 @@ run_test test_dry_run_does_not_modify_files
 run_test test_doctor_smoke_and_export
 run_test test_show_output_compatibility_hints
 run_test test_failure_hints_do_not_update_state
+run_test test_advanced_profiles_write_and_links
+run_test test_advanced_remove_repeat_and_dry_run
+run_test test_advanced_view_doctor_smoke_export
+run_test test_advanced_uninstalled_show_doctor_smoke_are_friendly
+run_test test_readme_final_user_doc_guard
 
 printf 'All Reality/XHTTP tests passed.\n'

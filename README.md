@@ -1,16 +1,16 @@
 # Xray-OneClick
 
-**Xray-OneClick 1.0.0 正式版**
+**Xray-OneClick 1.1.1**
 
 Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在 Debian / Ubuntu systemd 服务器上快速安装和维护个人 Xray 节点。
 
-脚本支持 Shadowsocks 2022、VLESS Encryption、VLESS TCP REALITY、VLESS Encryption + XHTTP + FinalMask、SOCKS5，以及 Tunnel 中转管理。默认带基础安全屏蔽、配置备份、服务诊断、配置导出、Xray-core 升级和安全卸载能力。
+脚本支持 Shadowsocks 2022、VLESS Encryption、VLESS TCP REALITY、VLESS Encryption + XHTTP + FinalMask、SOCKS5、Tunnel 中转管理，以及高级协议组合。默认带基础安全屏蔽、配置备份、服务诊断、配置导出、Xray-core 升级和安全卸载能力。
 
-当前版本：`1.0.0`
+当前版本：`1.1.1`
 
 状态：正式版
 
-说明：XHTTP + FinalMask 属于高级兼容功能，客户端支持情况取决于客户端内核版本；如果客户端无法导入带 `fm=` 的链接，请优先关闭 FinalMask 或手动填写参数。
+说明：1.1.1 收敛高级协议组合的输出、诊断、删除边界和文档推荐顺序。普通用户仍建议优先使用 VLESS TCP REALITY；高级组合需要较新的 Xray-core 和较新的客户端核心。
 
 ## 功能特性
 
@@ -20,6 +20,9 @@ Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在
 - VLESS Encryption
 - VLESS TCP REALITY
 - VLESS Encryption + XHTTP + FinalMask
+- VLESS XHTTP + REALITY
+- VLESS Encryption + REALITY
+- VLESS Encryption + XHTTP + REALITY + FinalMask
 - SOCKS5 代理
 - Tunnel 中转管理
 - Endpoint 显示模式
@@ -123,7 +126,8 @@ ike xray upgrade --restart
 13. 开启/关闭增强安全屏蔽
 14. 导出当前配置备份
 15. Tunnel 中转管理
-16. 退出
+16. 高级协议组合
+17. 退出
 ```
 
 ## 常用命令
@@ -132,12 +136,21 @@ ike xray upgrade --restart
 ike view
 ike view reality
 ike view xhttp
+ike view xhttp-reality
+ike view enc-reality
+ike view fullstack
 ike doctor proxy
 ike doctor reality
 ike doctor reality-key
 ike doctor xhttp
+ike doctor xhttp-reality
+ike doctor enc-reality
+ike doctor fullstack
 ike smoke reality
 ike smoke xhttp
+ike smoke xhttp-reality
+ike smoke enc-reality
+ike smoke fullstack
 ike export clients --output /root/xray-clients.txt
 ike export report --output /root/xray-report.txt
 ```
@@ -147,6 +160,7 @@ ike export report --output /root/xray-report.txt
 ```bash
 ike smoke reality --restart
 ike smoke xhttp --restart
+ike smoke fullstack --restart
 ```
 
 ## Shadowsocks 2022
@@ -182,6 +196,8 @@ ike view
 脚本会调用 `xray vlessenc` 生成服务端 `decryption` 和客户端 `encryption`，并将客户端需要的字段写入 `installer-state.json`。服务端 `decryption` 属于敏感字段，默认导出报告会脱敏。
 
 ## VLESS TCP REALITY
+
+主力推荐优先级：`1`。如果你只想部署一个相对稳妥的 VLESS 节点，建议优先选择本模式。
 
 通过菜单安装：
 
@@ -224,6 +240,8 @@ ike smoke reality
 
 ## VLESS Encryption + XHTTP + FinalMask
 
+主力推荐优先级：`3`。它属于高级备用方案，服务端可一键写入，但客户端兼容性仍取决于客户端核心。
+
 通过菜单安装：
 
 ```text
@@ -261,6 +279,113 @@ ike xhttp install --finalmask off
 ike doctor xhttp
 ike smoke xhttp
 ```
+
+## 高级协议组合
+
+高级协议组合统一放在主菜单第 16 项：
+
+```text
+16. 高级协议组合
+```
+
+高级组合适合已经确认普通节点可用、并且想测试更前沿组合的用户。普通用户建议优先使用普通 Reality。高级组合不使用 TLS 证书，默认都是 `security=reality`，不是 `security=tls`。
+
+推荐顺序：
+
+1. 主力推荐：VLESS TCP REALITY
+2. 高级备用：VLESS XHTTP + REALITY
+3. 高级备用：VLESS Encryption + XHTTP + FinalMask
+4. 实验组合：VLESS Encryption + REALITY
+5. 实验组合：VLESS Encryption + XHTTP + REALITY + FinalMask
+6. 兼容兜底：VLESS Encryption
+7. 兼容兜底：SS2022
+8. 兼容兜底：SOCKS5
+
+FullStack 不作为普通用户默认推荐。如果 FullStack 不兼容，建议按下面顺序降级：
+
+1. `ike fullstack install --finalmask off`
+2. `ike xhttp-reality install`
+3. `ike enc-reality install`
+4. `ike reality install`
+5. `ike xhttp install --finalmask off`
+6. 菜单第 4 项安装 VLESS Encryption
+7. SS2022 / SOCKS5
+
+### VLESS XHTTP + REALITY
+
+推荐定位：高级备用。它比 FullStack 更轻，适合先验证 XHTTP 与 REALITY 组合。
+
+```bash
+ike xhttp-reality install
+ike xhttp-reality install --port 30006 --path /api/test --sni www.abmindustriesgroup.com
+ike xhttp-reality show
+ike doctor xhttp-reality
+ike smoke xhttp-reality --restart
+ike xhttp-reality remove
+```
+
+说明：
+
+- Transport = XHTTP
+- Security = REALITY
+- REALITY target = `SNI:443`
+- 默认不写 Vision flow，减少 XHTTP + REALITY 的兼容风险
+- 适合想测试 XHTTP 与 Reality 组合的用户
+
+### VLESS Encryption + REALITY
+
+推荐定位：实验组合。它叠加 VLESS Encryption 与 REALITY，客户端兼容性要求较高。
+
+```bash
+ike enc-reality install
+ike enc-reality install --port 30007 --sni www.abmindustriesgroup.com
+ike enc-reality show
+ike doctor enc-reality
+ike smoke enc-reality --restart
+ike enc-reality remove
+```
+
+说明：
+
+- Transport = TCP
+- Security = REALITY
+- 复用 `xray vlessenc` 生成 VLESS Encryption
+- 默认不写 Vision flow
+- 客户端需要同时支持 VLESS Encryption 与 REALITY
+- 不建议把它作为唯一节点，建议保留普通 Reality 作为备用
+
+### VLESS Encryption + XHTTP + REALITY + FinalMask
+
+推荐定位：最高级实验组合，不作为普通用户默认推荐。
+
+```bash
+ike fullstack install
+ike fullstack install --port 30008 --path /api/test --sni www.abmindustriesgroup.com --finalmask on
+ike fullstack install --port 30008 --path /api/test --sni www.abmindustriesgroup.com --finalmask off
+ike fullstack show
+ike doctor fullstack
+ike smoke fullstack --restart
+ike fullstack remove
+```
+
+说明：
+
+- Transport = XHTTP
+- Security = REALITY
+- 复用 VLESS Encryption
+- 可选 FinalMask
+- 不使用 TLS 证书
+- 兼容性最挑客户端
+
+如果 FullStack 导入或连接失败，先尝试：
+
+```bash
+ike fullstack install --finalmask off
+```
+
+仍不兼容时，请按上面的降级路径切换到 XHTTP + REALITY、Encryption + REALITY、普通 Reality、XHTTP FinalMask off、VLESS Encryption 或 SS2022 / SOCKS5。
+
+高级组合同样遵守敏感字段策略：`privateKey` 是服务端字段，不要泄露；客户端需要的是 `publicKey/pbk`。服务端 `decryption` 默认不会在脱敏报告中输出，客户端 `encryption` 会在客户端导出里显示。
 
 ## SOCKS5
 

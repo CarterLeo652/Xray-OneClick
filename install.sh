@@ -19,7 +19,7 @@ LEGACY_SHORTCUT_PATH="/usr/local/bin/sb"
 INSTALLER_DIR="/usr/local/share/ike"
 INSTALLER_PATH="${INSTALLER_DIR}/install.sh"
 SCRIPT_NAME="Xray-OneClick"
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.1.1"
 REPO_URL="https://github.com/ike-sh/Xray-OneClick"
 RAW_SCRIPT_URL="https://raw.githubusercontent.com/ike-sh/Xray-OneClick/main/install.sh"
 XRAY_RELEASE_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
@@ -38,6 +38,12 @@ REALITY_DEFENDER_PORT_MAX="49999"
 REALITY_FLOW_DEFAULT="xtls-rprx-vision"
 VLESS_XHTTP_FM_TAG="vless-enc-xhttp-finalmask-in"
 VLESS_XHTTP_FM_STATE_KEY="vless_xhttp_finalmask"
+VLESS_XHTTP_REALITY_TAG="vless+xhttp+reality"
+VLESS_XHTTP_REALITY_STATE_KEY="vless_xhttp_reality"
+VLESS_ENC_REALITY_TAG="vless+enc+reality"
+VLESS_ENC_REALITY_STATE_KEY="vless_enc_reality"
+VLESS_FULLSTACK_TAG="vless+enc+xhttp+reality+finalmask"
+VLESS_FULLSTACK_STATE_KEY="vless_fullstack"
 SOCKS_TAG="socks-in"
 TUNNEL_TAG_PREFIX="tunnel-"
 LEGACY_FORWARD_TAG_PREFIX="forward-"
@@ -2760,6 +2766,718 @@ remove_vless_xhttp_finalmask_config() {
     state_delete_key "$VLESS_XHTTP_FM_STATE_KEY"
     state_set_meta_action "删除 VLESS Encryption + XHTTP + FinalMask" || err "[状态] 最近变更记录失败。"
     ok "[完成] VLESS Encryption + XHTTP + FinalMask 已删除。"
+}
+
+advanced_profile_tag() {
+    case "$1" in
+        xhttp-reality) printf '%s' "$VLESS_XHTTP_REALITY_TAG" ;;
+        enc-reality) printf '%s' "$VLESS_ENC_REALITY_TAG" ;;
+        fullstack) printf '%s' "$VLESS_FULLSTACK_TAG" ;;
+        *) return 1 ;;
+    esac
+}
+
+advanced_profile_state_key() {
+    case "$1" in
+        xhttp-reality) printf '%s' "$VLESS_XHTTP_REALITY_STATE_KEY" ;;
+        enc-reality) printf '%s' "$VLESS_ENC_REALITY_STATE_KEY" ;;
+        fullstack) printf '%s' "$VLESS_FULLSTACK_STATE_KEY" ;;
+        *) return 1 ;;
+    esac
+}
+
+advanced_profile_name() {
+    case "$1" in
+        xhttp-reality) printf '%s' "VLESS XHTTP + REALITY" ;;
+        enc-reality) printf '%s' "VLESS Encryption + REALITY" ;;
+        fullstack) printf '%s' "VLESS Encryption + XHTTP + REALITY + FinalMask" ;;
+        *) return 1 ;;
+    esac
+}
+
+advanced_profile_link_name() {
+    case "$1" in
+        xhttp-reality) printf '%s' "Xray-XHTTP-Reality" ;;
+        enc-reality) printf '%s' "Xray-Enc-Reality" ;;
+        fullstack) printf '%s' "Xray-FullStack" ;;
+        *) return 1 ;;
+    esac
+}
+
+advanced_profile_network() {
+    case "$1" in
+        xhttp-reality | fullstack) printf '%s' "xhttp" ;;
+        enc-reality) printf '%s' "tcp" ;;
+        *) return 1 ;;
+    esac
+}
+
+advanced_profile_has_xhttp() {
+    [[ "$1" == "xhttp-reality" || "$1" == "fullstack" ]]
+}
+
+advanced_profile_has_encryption() {
+    [[ "$1" == "enc-reality" || "$1" == "fullstack" ]]
+}
+
+advanced_profile_has_finalmask() {
+    [[ "$1" == "fullstack" ]]
+}
+
+remove_inbound_by_tag() {
+    local tag="$1"
+    local tmp
+
+    init_config || return 1
+    tmp="$(mktemp)" || return 1
+    jq --arg tag "$tag" '.inbounds = ((.inbounds // []) | map(select(.tag != $tag)))' "$CONFIG_FILE" >"$tmp" && mv "$tmp" "$CONFIG_FILE"
+    rm -f "$tmp"
+}
+
+remove_state_key() {
+    state_delete_key "$1"
+}
+
+port_belongs_to_tag() {
+    local port="$1"
+    local tag="$2"
+
+    [[ -f "$CONFIG_FILE" ]] || return 1
+    validate_port "$port" || return 1
+    jq -e --argjson port "$port" --arg tag "$tag" 'any(.inbounds[]?; (.port? // empty) == $port and .tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1
+}
+
+port_used_in_config_except_tag() {
+    local port="$1"
+    local tag="$2"
+
+    [[ -f "$CONFIG_FILE" ]] || return 1
+    validate_port "$port" || return 1
+    jq -e --argjson port "$port" --arg tag "$tag" 'any(.inbounds[]?; (.port? // empty) == $port and .tag != $tag)' "$CONFIG_FILE" >/dev/null 2>&1
+}
+
+random_free_port_except_tag() {
+    local min="$1"
+    local max="$2"
+    local tag="$3"
+    local span port rand attempt
+
+    validate_port "$min" || return 1
+    validate_port "$max" || return 1
+    ((min <= max)) || return 1
+    span=$((max - min + 1))
+
+    for ((attempt = 0; attempt < 200; attempt++)); do
+        if command -v openssl >/dev/null 2>&1; then
+            rand=$((16#$(openssl rand -hex 2)))
+        else
+            rand=$RANDOM
+        fi
+        port=$((min + rand % span))
+        if ! port_used_in_config_except_tag "$port" "$tag" && { check_port "$port" || port_belongs_to_tag "$port" "$tag"; }; then
+            printf '%s' "$port"
+            return 0
+        fi
+    done
+
+    for ((port = min; port <= max; port++)); do
+        if ! port_used_in_config_except_tag "$port" "$tag" && { check_port "$port" || port_belongs_to_tag "$port" "$tag"; }; then
+            printf '%s' "$port"
+            return 0
+        fi
+    done
+    return 1
+}
+
+ask_or_random_advanced_port() {
+    local prompt="$1"
+    local requested="$2"
+    local tag="$3"
+    local __resultvar="$4"
+    local input port
+
+    if [[ -n "$requested" ]]; then
+        validate_port "$requested" || {
+            err "[高级组合] 端口无效: $requested"
+            return 1
+        }
+        if port_used_in_config_except_tag "$requested" "$tag"; then
+            err "[高级组合] 端口已存在于其它 inbound: $requested"
+            return 1
+        fi
+        if ! check_port "$requested" && ! port_belongs_to_tag "$requested" "$tag"; then
+            err "[高级组合] 端口已被系统监听占用: $requested"
+            return 1
+        fi
+        printf -v "$__resultvar" '%s' "$requested"
+        return 0
+    fi
+
+    if [[ "${ADVANCED_CONFIG_MODE:-interactive}" != "interactive" ]]; then
+        port="$(random_free_port_except_tag "$REALITY_PORT_MIN" "$REALITY_PORT_MAX" "$tag")" || {
+            err "[高级组合] 无法在 ${REALITY_PORT_MIN}-${REALITY_PORT_MAX} 中找到可用端口。"
+            return 1
+        }
+        printf -v "$__resultvar" '%s' "$port"
+        return 0
+    fi
+
+    while true; do
+        read -r -p "${prompt} (回车随机 ${REALITY_PORT_MIN}-${REALITY_PORT_MAX}): " input
+        if [[ -z "$input" ]]; then
+            port="$(random_free_port_except_tag "$REALITY_PORT_MIN" "$REALITY_PORT_MAX" "$tag")" || {
+                err "[高级组合] 无法找到可用端口。"
+                return 1
+            }
+            info "[高级组合] 随机选择端口: ${port}"
+            printf -v "$__resultvar" '%s' "$port"
+            return 0
+        fi
+        if ! validate_port "$input"; then
+            err "[高级组合] 端口无效，请输入 1-65535。"
+            continue
+        fi
+        if port_used_in_config_except_tag "$input" "$tag" || { ! check_port "$input" && ! port_belongs_to_tag "$input" "$tag"; }; then
+            err "[高级组合] 端口 ${input} 已被占用或存在于其它 inbound。"
+            continue
+        fi
+        warn_reserved_port "$input"
+        printf -v "$__resultvar" '%s' "$input"
+        return 0
+    done
+}
+
+build_vless_client_json() {
+    local uuid="$1"
+    local email="${2:-advanced@xray}"
+
+    jq -cn --arg uuid "$uuid" --arg email "$email" '[{"id": $uuid, "email": $email}]'
+}
+
+build_xhttp_settings_json() {
+    local path="$1"
+
+    MSYS2_ENV_CONV_EXCL="*" ADVANCED_XHTTP_PATH="$path" jq -cn '{path: env.ADVANCED_XHTTP_PATH}'
+}
+
+build_reality_settings_json() {
+    local sni="$1"
+    local private_key="$2"
+    local short_ids_json="$3"
+    local spider_x="${4:-/}"
+
+    MSYS2_ENV_CONV_EXCL="*" ADVANCED_SPIDER_X="$spider_x" jq -cn --arg sni "$sni" \
+        --arg private_key "$private_key" \
+        --argjson short_ids "$short_ids_json" '{
+        dest: ($sni + ":443"),
+        show: false,
+        xver: 0,
+        spiderX: env.ADVANCED_SPIDER_X,
+        shortIds: $short_ids,
+        privateKey: $private_key,
+        serverNames: [$sni]
+      }'
+}
+
+build_finalmask_json() {
+    default_finalmask_json
+}
+
+print_advanced_compat_hint() {
+    local kind="$1"
+
+    echo "兼容提示:"
+    case "$kind" in
+        xhttp-reality)
+            echo "  - XHTTP + REALITY 需要较新的 Xray-core 和客户端核心。"
+            echo "  - 如果客户端无法导入，建议退回普通 Reality 或 XHTTP-FinalMask off。"
+            ;;
+        enc-reality)
+            echo "  - VLESS Encryption + REALITY 是高级实验组合。"
+            echo "  - 如果客户端不支持 encryption + reality 同时导入，建议使用普通 Reality 或普通 VLESS Encryption。"
+            ;;
+        fullstack)
+            echo "  - FullStack 是最高级组合，客户端兼容性要求最高。"
+            echo "  - 不兼容时请按降级路径切换："
+            echo "    1. ike fullstack install --finalmask off"
+            echo "    2. ike xhttp-reality install"
+            echo "    3. ike enc-reality install"
+            echo "    4. ike reality install"
+            echo "    5. ike xhttp install --finalmask off"
+            echo "    6. 菜单 4 安装 VLESS Encryption"
+            echo "    7. SS2022 / SOCKS5"
+            ;;
+    esac
+    echo "  - privateKey 是服务端字段，不要填入客户端，也不要泄露。"
+    echo "  - publicKey/pbk 是客户端字段。"
+}
+
+configure_advanced_profile() {
+    local kind="$1"
+    local mode="${2:-interactive}"
+    local tag name input port
+
+    tag="$(advanced_profile_tag "$kind")" || return 1
+    name="$(advanced_profile_name "$kind")" || return 1
+    ADVANCED_CONFIG_MODE="$mode"
+    REALITY_CONFIG_MODE="$mode"
+
+    if [[ "$mode" != "dry-run" ]]; then
+        install_or_update_xray || return 1
+    fi
+
+    ask_or_random_advanced_port "${name} 入口端口" "${ADVANCED_PORT_REQUEST:-}" "$tag" ADVANCED_PORT || return 1
+
+    if advanced_profile_has_xhttp "$kind"; then
+        if [[ "$mode" == "interactive" ]]; then
+            read -r -p "XHTTP path (回车随机): " input
+            ADVANCED_PATH="${input:-$(random_xhttp_path)}"
+        else
+            ADVANCED_PATH="${ADVANCED_PATH_REQUEST:-$(random_xhttp_path)}"
+        fi
+        validate_xhttp_path "$ADVANCED_PATH" || {
+            err "[高级组合] path 无效，必须以 / 开头，长度不超过 128，且不能包含空格、?、# 或反斜杠。"
+            return 1
+        }
+    else
+        ADVANCED_PATH=""
+    fi
+
+    ask_or_random_reality_sni "${ADVANCED_SNI_REQUEST:-}" ADVANCED_SERVER_NAME || return 1
+    info "[高级组合] REALITY target 使用 ${ADVANCED_SERVER_NAME}:443，security=reality，不使用 TLS 证书。"
+    if ! test_reality_target_tls "$ADVANCED_SERVER_NAME"; then
+        err "[高级组合] ${ADVANCED_SERVER_NAME}:443 TLS 探测失败。"
+        if [[ "$mode" == "interactive" ]]; then
+            confirm_yes_no "仍然继续写入高级组合配置?" "n" || return 1
+        elif ! { env_truthy "${XRAY_ONECLICK_YES:-}" || env_truthy "${ADVANCED_ASSUME_YES:-}"; }; then
+            err "[高级组合] 非交互模式默认取消；确认目标可用后可设置 XRAY_ONECLICK_YES=1 重试。"
+            return 1
+        fi
+    fi
+
+    ADVANCED_UUID="$(generate_uuid)" || {
+        err "[高级组合] UUID 生成失败。"
+        return 1
+    }
+    ADVANCED_SPIDER_X="/"
+    generate_reality_keys || return 1
+    generate_reality_short_ids || return 1
+
+    if advanced_profile_has_encryption "$kind"; then
+        VLESS_MODE="${VLESS_MODE:-basic}"
+        VLESS_ENC_METHOD="${VLESS_ENC_METHOD:-native}"
+        VLESS_CLIENT_RTT="${VLESS_CLIENT_RTT:-0rtt}"
+        VLESS_SERVER_TICKET="${VLESS_SERVER_TICKET:-600s}"
+        VLESS_AUTH="${VLESS_AUTH:-x25519}"
+        if [[ "$mode" == "interactive" ]]; then
+            echo -e "\n${YELLOW}[配置] ${name} 的 VLESS Encryption${PLAIN}"
+            echo -e "  1) 基础模式 ${GREEN}(X25519/native/0rtt/600s)${PLAIN}"
+            echo "  2) 高级模式 (认证、外观混淆、RTT、ticket)"
+            read -r -p "选项 (默认: 1): " input
+            if [[ "${input:-1}" == "2" ]]; then
+                VLESS_MODE="advanced"
+                configure_vless_advanced_options
+            fi
+            ask_vless_auth
+        fi
+        generate_vless_encryption_pair "$VLESS_AUTH" || return 1
+    else
+        VLESS_DECRYPTION=""
+        VLESS_ENCRYPTION=""
+    fi
+
+    if advanced_profile_has_finalmask "$kind"; then
+        if [[ "$mode" == "interactive" ]]; then
+            read -r -p "开启 FinalMask? [Y/n]: " input
+            case "${input,,}" in
+                n | no) ADVANCED_FINALMASK_ENABLED="false" ;;
+                *) ADVANCED_FINALMASK_ENABLED="true" ;;
+            esac
+        else
+            ADVANCED_FINALMASK_ENABLED="${ADVANCED_FINALMASK_REQUEST:-true}"
+        fi
+        case "${ADVANCED_FINALMASK_ENABLED,,}" in
+            true | on | yes | y | 1) ADVANCED_FINALMASK_ENABLED="true" ;;
+            false | off | no | n | 0) ADVANCED_FINALMASK_ENABLED="false" ;;
+            *)
+                err "[高级组合] finalmask 参数必须为 on/off。"
+                return 1
+                ;;
+        esac
+        ADVANCED_FINALMASK_JSON="$(build_finalmask_json)" || return 1
+    else
+        ADVANCED_FINALMASK_ENABLED="false"
+        ADVANCED_FINALMASK_JSON=""
+    fi
+}
+
+build_advanced_share_link() {
+    local kind="$1"
+    local state_key port uuid path encryption public_key short_id server_name spider_x fm_enabled fm_json
+    local endpoint_pair host link_port name network path_uri pbk_uri sni_uri sid_uri spx_uri enc_uri fm_uri name_uri
+
+    state_key="$(advanced_profile_state_key "$kind")" || return 1
+    network="$(advanced_profile_network "$kind")" || return 1
+    port="${ADVANCED_PORT:-}"
+    uuid="${ADVANCED_UUID:-}"
+    path="${ADVANCED_PATH:-}"
+    encryption="${VLESS_ENCRYPTION:-}"
+    public_key="${REALITY_PUBLIC_KEY:-}"
+    short_id="${REALITY_DEFAULT_SHORT_ID:-}"
+    server_name="${ADVANCED_SERVER_NAME:-}"
+    spider_x="${ADVANCED_SPIDER_X:-/}"
+    fm_enabled="${ADVANCED_FINALMASK_ENABLED:-false}"
+    fm_json="${ADVANCED_FINALMASK_JSON:-}"
+
+    if [[ -z "$port" && -f "$STATE_FILE" ]]; then
+        port="$(jq -r ".${state_key}.port // empty" "$STATE_FILE" 2>/dev/null)"
+        uuid="$(jq -r ".${state_key}.uuid // empty" "$STATE_FILE" 2>/dev/null)"
+        path="$(jq -r ".${state_key}.path // empty" "$STATE_FILE" 2>/dev/null)"
+        encryption="$(jq -r ".${state_key}.encryption // empty" "$STATE_FILE" 2>/dev/null)"
+        public_key="$(jq -r ".${state_key}.public_key // empty" "$STATE_FILE" 2>/dev/null)"
+        short_id="$(jq -r ".${state_key}.default_short_id // empty" "$STATE_FILE" 2>/dev/null)"
+        server_name="$(jq -r ".${state_key}.server_name // empty" "$STATE_FILE" 2>/dev/null)"
+        spider_x="$(jq -r ".${state_key}.spider_x // \"/\"" "$STATE_FILE" 2>/dev/null)"
+        fm_enabled="$(jq -r ".${state_key}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
+        fm_json="$(jq -c ".${state_key}.finalmask_json // empty" "$STATE_FILE" 2>/dev/null)"
+    fi
+
+    [[ -n "$port" && -n "$uuid" && -n "$public_key" && -n "$short_id" && -n "$server_name" ]] || return 1
+    if advanced_profile_has_xhttp "$kind"; then
+        [[ -n "$path" ]] || return 1
+    fi
+    if advanced_profile_has_encryption "$kind"; then
+        [[ -n "$encryption" ]] || return 1
+    fi
+
+    endpoint_pair="$(split_endpoint_for_link "$port")"
+    IFS=$'\t' read -r host link_port <<<"$endpoint_pair"
+    name="$(advanced_profile_link_name "$kind")"
+    pbk_uri="$(url_encode "$public_key")"
+    sni_uri="$(url_encode "$server_name")"
+    sid_uri="$(url_encode "$short_id")"
+    spx_uri="$(url_encode "$spider_x")"
+    name_uri="$(url_encode "$name")"
+
+    printf 'vless://%s@%s:%s?type=%s&security=reality' "$uuid" "$host" "$link_port" "$network"
+    if advanced_profile_has_xhttp "$kind"; then
+        path_uri="$(url_encode "$path")"
+        printf '&path=%s' "$path_uri"
+    fi
+    printf '&pbk=%s&fp=chrome&sni=%s&sid=%s&spx=%s' "$pbk_uri" "$sni_uri" "$sid_uri" "$spx_uri"
+    if advanced_profile_has_encryption "$kind"; then
+        enc_uri="$(url_encode "$encryption")"
+        printf '&encryption=%s' "$enc_uri"
+    fi
+    if advanced_profile_has_finalmask "$kind" && [[ "${fm_enabled,,}" == "true" && -n "$fm_json" && "$fm_json" != "null" ]]; then
+        fm_uri="$(encode_finalmask_for_share_link "$fm_json")" || return 1
+        printf '&fm=%s' "$fm_uri"
+    fi
+    printf '#%s' "$name_uri"
+}
+
+state_set_advanced_profile() {
+    init_state
+    local kind="$1"
+    local state_key tmp link timestamp finalmask_json hash32
+
+    state_key="$(advanced_profile_state_key "$kind")" || return 1
+    link="$(build_advanced_share_link "$kind" || true)"
+    timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    hash32="${REALITY_X25519_HASH32:-}"
+    finalmask_json="null"
+    if advanced_profile_has_finalmask "$kind" && [[ "$ADVANCED_FINALMASK_ENABLED" == "true" ]]; then
+        finalmask_json="$ADVANCED_FINALMASK_JSON"
+    fi
+
+    tmp="$(mktemp)" || return 1
+    MSYS2_ENV_CONV_EXCL="*" ADVANCED_XHTTP_PATH="${ADVANCED_PATH:-}" ADVANCED_SPIDER_X="${ADVANCED_SPIDER_X:-/}" jq --arg state_key "$state_key" \
+        --arg kind "$kind" \
+        --arg tag "$(advanced_profile_tag "$kind")" \
+        --arg port "$ADVANCED_PORT" \
+        --arg uuid "$ADVANCED_UUID" \
+        --arg private_key "$REALITY_PRIVATE_KEY" \
+        --arg public_key "$REALITY_PUBLIC_KEY" \
+        --argjson short_ids "$REALITY_SHORT_IDS_JSON" \
+        --arg default_short_id "$REALITY_DEFAULT_SHORT_ID" \
+        --arg server_name "$ADVANCED_SERVER_NAME" \
+        --arg decryption "${VLESS_DECRYPTION:-}" \
+        --arg encryption "${VLESS_ENCRYPTION:-}" \
+        --arg has_encryption "$(advanced_profile_has_encryption "$kind" && printf true || printf false)" \
+        --arg auth "${VLESS_AUTH:-}" \
+        --arg enc_method "${VLESS_ENC_METHOD:-}" \
+        --arg client_rtt "${VLESS_CLIENT_RTT:-}" \
+        --arg server_ticket "${VLESS_SERVER_TICKET:-}" \
+        --arg finalmask_enabled "${ADVANCED_FINALMASK_ENABLED:-false}" \
+        --argjson finalmask_json "$finalmask_json" \
+        --arg hash32 "$hash32" \
+        --arg created_at "$timestamp" \
+        --arg link "$link" '
+        .[$state_key] = {
+          "tag": $tag,
+          "kind": $kind,
+          "port": ($port|tonumber),
+          "uuid": $uuid,
+          "private_key": $private_key,
+          "public_key": $public_key,
+          "short_ids": $short_ids,
+          "default_short_id": $default_short_id,
+          "server_name": $server_name,
+          "spider_x": env.ADVANCED_SPIDER_X,
+          "created_at": $created_at,
+          "link": $link
+        } |
+        if env.ADVANCED_XHTTP_PATH != "" then .[$state_key].path = env.ADVANCED_XHTTP_PATH else . end |
+        if $has_encryption == "true" then
+          .[$state_key].decryption = $decryption |
+          .[$state_key].encryption = $encryption |
+          .[$state_key].auth = $auth |
+          .[$state_key].enc_method = $enc_method |
+          .[$state_key].client_rtt = $client_rtt |
+          .[$state_key].server_ticket = $server_ticket
+        else . end |
+        if $kind == "fullstack" then
+          .[$state_key].finalmask_enabled = ($finalmask_enabled == "true") |
+          .[$state_key].finalmask_json = $finalmask_json
+        else . end |
+        if $hash32 != "" then .[$state_key].hash32 = $hash32 else . end
+       ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
+    rm -f "$tmp"
+    ensure_config_security
+}
+
+print_advanced_dry_run() {
+    local kind="$1"
+    local temp_config="$2"
+    local link name
+
+    name="$(advanced_profile_name "$kind")"
+    link="$(build_advanced_share_link "$kind" || true)"
+    echo -e "\n${YELLOW}${name} dry-run 预览${PLAIN}"
+    echo "----------------------------------------"
+    echo "入口端口: ${ADVANCED_PORT}"
+    advanced_profile_has_xhttp "$kind" && echo "Path: ${ADVANCED_PATH}"
+    echo "SNI: ${ADVANCED_SERVER_NAME}"
+    echo "REALITY target: ${ADVANCED_SERVER_NAME}:443"
+    echo "ShortID: $(mask_value "$REALITY_DEFAULT_SHORT_ID" 2)"
+    echo "PublicKey: $(mask_value "$REALITY_PUBLIC_KEY" 6)"
+    advanced_profile_has_encryption "$kind" && echo "VLESS Encryption: $(mask_value "$VLESS_ENCRYPTION" 8)"
+    advanced_profile_has_finalmask "$kind" && echo "FinalMask: $([[ "${ADVANCED_FINALMASK_ENABLED:-false}" == "true" ]] && printf on || printf off)"
+    [[ -n "$link" ]] && echo "Masked Link: $(mask_share_link "$link")"
+    echo "将写入 inbound:"
+    echo "- $(advanced_profile_tag "$kind")"
+    jq empty "$temp_config" >/dev/null && echo "[✓] 临时 JSON 结构有效"
+    xray_test_temp_config "$temp_config"
+    echo "不会修改真实配置。"
+}
+
+install_advanced_profile() {
+    local kind="$1"
+    local tag name tmp config_source base_tmp network finalmask_json
+
+    tag="$(advanced_profile_tag "$kind")" || return 1
+    name="$(advanced_profile_name "$kind")" || return 1
+    network="$(advanced_profile_network "$kind")" || return 1
+    config_source="$CONFIG_FILE"
+    if [[ "${ADVANCED_DRY_RUN:-false}" == "true" && ! -f "$config_source" ]]; then
+        base_tmp="$(mktemp)" || return 1
+        printf '{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[{"tag":"direct","protocol":"freedom"}],"routing":{"rules":[]}}\n' >"$base_tmp"
+        config_source="$base_tmp"
+    fi
+    if [[ "${ADVANCED_DRY_RUN:-false}" != "true" ]]; then
+        backup_config || {
+            err "[高级组合] 配置备份失败。"
+            return 1
+        }
+    fi
+
+    finalmask_json="null"
+    if advanced_profile_has_finalmask "$kind" && [[ "$ADVANCED_FINALMASK_ENABLED" == "true" ]]; then
+        finalmask_json="$ADVANCED_FINALMASK_JSON"
+    fi
+
+    tmp="$(mktemp)" || return 1
+    if ! MSYS2_ENV_CONV_EXCL="*" ADVANCED_XHTTP_PATH="${ADVANCED_PATH:-}" ADVANCED_SPIDER_X="${ADVANCED_SPIDER_X:-/}" jq --arg tag "$tag" \
+        --arg port "$ADVANCED_PORT" \
+        --arg uuid "$ADVANCED_UUID" \
+        --arg network "$network" \
+        --arg sni "$ADVANCED_SERVER_NAME" \
+        --arg private_key "$REALITY_PRIVATE_KEY" \
+        --argjson short_ids "$REALITY_SHORT_IDS_JSON" \
+        --arg decryption "${VLESS_DECRYPTION:-}" \
+        --arg has_encryption "$(advanced_profile_has_encryption "$kind" && printf true || printf false)" \
+        --arg has_xhttp "$(advanced_profile_has_xhttp "$kind" && printf true || printf false)" \
+        --arg finalmask_enabled "$(advanced_profile_has_finalmask "$kind" && printf '%s' "${ADVANCED_FINALMASK_ENABLED:-false}" || printf false)" \
+        --argjson finalmask_json "$finalmask_json" '
+        .inbounds = ((.inbounds // []) | map(select(.tag != $tag))) |
+        .inbounds += [({
+          "tag": $tag,
+          "listen": "0.0.0.0",
+          "port": ($port|tonumber),
+          "protocol": "vless",
+          "settings": {
+            "clients": [
+              {
+                "id": $uuid,
+                "email": "advanced@xray"
+              }
+            ],
+            "decryption": (if $has_encryption == "true" then $decryption else "none" end)
+          },
+          "streamSettings": ({
+            "network": $network,
+            "security": "reality",
+            "realitySettings": {
+              "dest": ($sni + ":443"),
+              "show": false,
+              "xver": 0,
+              "spiderX": env.ADVANCED_SPIDER_X,
+              "shortIds": $short_ids,
+              "privateKey": $private_key,
+              "serverNames": [$sni]
+            }
+          } |
+          if $has_xhttp == "true" then
+            .xhttpSettings = {"path": env.ADVANCED_XHTTP_PATH}
+          else . end |
+          if $finalmask_enabled == "true" then
+            .finalmask = $finalmask_json
+          else . end),
+          "sniffing": {
+            "enabled": true,
+            "destOverride": ["http", "tls"]
+          }
+        })]
+       ' "$config_source" >"$tmp"; then
+        rm -f "$tmp"
+        [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
+        err "[高级组合] jq 生成配置失败。"
+        return 1
+    fi
+
+    if [[ "${ADVANCED_DRY_RUN:-false}" == "true" ]]; then
+        print_advanced_dry_run "$kind" "$tmp"
+        rm -f "$tmp"
+        [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
+        return 0
+    fi
+    [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
+
+    mv "$tmp" "$CONFIG_FILE" || {
+        rm -f "$tmp"
+        err "[高级组合] 写入 $CONFIG_FILE 失败。"
+        return 1
+    }
+
+    if ! apply_config "$name"; then
+        if advanced_profile_has_finalmask "$kind" && [[ "$ADVANCED_FINALMASK_ENABLED" == "true" ]]; then
+            print_finalmask_failure_hint
+        fi
+        print_apply_failure_hint "$kind"
+        return 1
+    fi
+    state_set_advanced_profile "$kind" || err "[状态] ${name} 状态写入失败，但 config.json 已生效。"
+    state_set_meta_action "安装 ${name}" || err "[状态] 最近变更记录失败。"
+    ok "[完成] ${name} 已写入 Xray 配置。"
+    print_advanced_profile_result "$kind"
+}
+
+print_advanced_profile_result() {
+    local kind="$1"
+    local missing_mode="${2:-skip}"
+    local state_key state_exists link port uuid path encryption server_name public_key short_id spider_x fm_enabled fm_json endpoint_pair
+    local address link_port name transport
+
+    state_key="$(advanced_profile_state_key "$kind")" || return 1
+    name="$(advanced_profile_name "$kind")" || return 1
+    transport="$(advanced_profile_network "$kind" | tr '[:lower:]' '[:upper:]')"
+    if [[ ! -f "$STATE_FILE" ]]; then
+        [[ "$missing_mode" == "show" ]] && echo "[${name}] 未安装。"
+        return 0
+    fi
+    state_exists="$(jq -r ".${state_key}.uuid // empty" "$STATE_FILE" 2>/dev/null)"
+    if [[ -z "$state_exists" ]]; then
+        [[ "$missing_mode" == "show" ]] && echo "[${name}] 未安装。"
+        return 0
+    fi
+
+    link="$(build_advanced_share_link "$kind" || jq -r ".${state_key}.link // empty" "$STATE_FILE" 2>/dev/null)"
+    port="$(jq -r ".${state_key}.port // empty" "$STATE_FILE" 2>/dev/null)"
+    uuid="$(jq -r ".${state_key}.uuid // empty" "$STATE_FILE" 2>/dev/null)"
+    path="$(jq -r ".${state_key}.path // empty" "$STATE_FILE" 2>/dev/null)"
+    encryption="$(jq -r ".${state_key}.encryption // empty" "$STATE_FILE" 2>/dev/null)"
+    server_name="$(jq -r ".${state_key}.server_name // empty" "$STATE_FILE" 2>/dev/null)"
+    public_key="$(jq -r ".${state_key}.public_key // empty" "$STATE_FILE" 2>/dev/null)"
+    short_id="$(jq -r ".${state_key}.default_short_id // empty" "$STATE_FILE" 2>/dev/null)"
+    spider_x="$(jq -r ".${state_key}.spider_x // \"/\"" "$STATE_FILE" 2>/dev/null)"
+    fm_enabled="$(jq -r ".${state_key}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
+    fm_json="$(jq -c ".${state_key}.finalmask_json // empty" "$STATE_FILE" 2>/dev/null)"
+    endpoint_pair="$(split_endpoint_for_link "$port")"
+    IFS=$'\t' read -r address link_port <<<"$endpoint_pair"
+
+    echo -e "\n${YELLOW}--- ${name} ---${PLAIN}"
+    echo -e "入口端口: ${port}"
+    advanced_profile_has_xhttp "$kind" && echo -e "Path: ${path}"
+    echo -e "REALITY target: ${server_name}:443"
+    advanced_profile_has_finalmask "$kind" && echo -e "FinalMask: $([[ "$fm_enabled" == "true" ]] && printf on || printf 'off（未启用 FinalMask）')"
+    [[ -n "$link" ]] && echo -e "VLESS URL: ${link}"
+    if [[ ${#link} -gt 1800 ]]; then
+        info "[高级组合] 链接较长，部分客户端可能需要手动填写参数。"
+    fi
+    echo "手动参数:"
+    echo "  Protocol: VLESS"
+    echo "  Transport: ${transport}"
+    echo "  Security: REALITY"
+    echo "  Address: ${address}"
+    echo "  Port: ${link_port}"
+    echo "  UUID: ${uuid}"
+    advanced_profile_has_xhttp "$kind" && echo "  Path: ${path}"
+    echo "  SNI: ${server_name}"
+    echo "  PublicKey: ${public_key} (客户端字段)"
+    echo "  ShortID: ${short_id}"
+    advanced_profile_has_encryption "$kind" && echo "  VLESS Encryption: ${encryption}"
+    advanced_profile_has_finalmask "$kind" && echo "  FinalMask: ${fm_enabled}"
+    if advanced_profile_has_finalmask "$kind" && [[ "$fm_enabled" == "true" && -n "$fm_json" && "$fm_json" != "null" ]]; then
+        echo "  FinalMask JSON: ${fm_json}"
+    fi
+    echo "  Fingerprint: chrome"
+    echo "  SpiderX: ${spider_x}"
+    print_advanced_compat_hint "$kind"
+}
+
+remove_advanced_profile_config() {
+    local kind="$1"
+    local tag state_key name tmp
+
+    tag="$(advanced_profile_tag "$kind")" || return 1
+    state_key="$(advanced_profile_state_key "$kind")" || return 1
+    name="$(advanced_profile_name "$kind")" || return 1
+
+    [[ -f "$CONFIG_FILE" ]] || {
+        info "[高级组合] 未找到配置文件，视为未安装。"
+        state_delete_key "$state_key" 2>/dev/null || true
+        return 0
+    }
+    backup_config || {
+        err "[高级组合] 配置备份失败。"
+        return 1
+    }
+
+    tmp="$(mktemp)" || return 1
+    if ! jq --arg tag "$tag" '.inbounds = ((.inbounds // []) | map(select(.tag != $tag)))' "$CONFIG_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        err "[高级组合] jq 删除配置失败。"
+        return 1
+    fi
+    mv "$tmp" "$CONFIG_FILE" || {
+        rm -f "$tmp"
+        err "[高级组合] 写入 $CONFIG_FILE 失败。"
+        return 1
+    }
+    apply_config "${name} 删除" || return 1
+    remove_state_key "$state_key"
+    state_set_meta_action "删除 ${name}" || err "[状态] 最近变更记录失败。"
+    ok "[完成] ${name} 已删除。"
 }
 
 install_socks5() {
@@ -5863,6 +6581,9 @@ view_config() {
 
     print_reality_result
     print_vless_xhttp_finalmask_result
+    print_advanced_profile_result "xhttp-reality"
+    print_advanced_profile_result "enc-reality"
+    print_advanced_profile_result "fullstack"
 
     local socks_in sp su sw
     socks_in="$(jq -c --arg tag "$SOCKS_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" 2>/dev/null)"
@@ -6033,6 +6754,9 @@ installed_protocols_summary() {
         jq -e --arg tag "$VLESS_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("VLESS Encryption")
         jq -e --arg tag "$REALITY_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("Reality")
         jq -e --arg tag "$VLESS_XHTTP_FM_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("XHTTP-FinalMask")
+        jq -e --arg tag "$VLESS_XHTTP_REALITY_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("XHTTP-Reality")
+        jq -e --arg tag "$VLESS_ENC_REALITY_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("Enc-Reality")
+        jq -e --arg tag "$VLESS_FULLSTACK_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("FullStack")
         jq -e --arg tag "$SOCKS_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("SOCKS5")
     fi
 
@@ -6122,6 +6846,63 @@ pause_return_menu() {
     read -r -p "按回车返回主菜单..." || exit 0
 }
 
+configure_advanced_profiles_menu() {
+    local opt del_opt
+
+    while true; do
+        echo -e "\n${YELLOW}[高级协议组合]${PLAIN}"
+        echo " 1. 安装 VLESS XHTTP + REALITY"
+        echo " 2. 安装 VLESS Encryption + REALITY"
+        echo " 3. 安装 VLESS Encryption + XHTTP + REALITY + FinalMask"
+        echo " 4. 查看高级协议组合"
+        echo " 5. 删除高级协议组合"
+        echo " 6. 返回主菜单"
+        read -r -p "选项: " opt
+        case "$opt" in
+            1)
+                if ! { prepare_system && configure_advanced_profile "xhttp-reality" "interactive" && install_advanced_profile "xhttp-reality"; }; then
+                    err "[失败] VLESS XHTTP + REALITY 安装未完成，请查看上方错误信息。"
+                fi
+                ;;
+            2)
+                if ! { prepare_system && configure_advanced_profile "enc-reality" "interactive" && install_advanced_profile "enc-reality"; }; then
+                    err "[失败] VLESS Encryption + REALITY 安装未完成，请查看上方错误信息。"
+                fi
+                ;;
+            3)
+                if ! { prepare_system && configure_advanced_profile "fullstack" "interactive" && install_advanced_profile "fullstack"; }; then
+                    err "[失败] VLESS Encryption + XHTTP + REALITY + FinalMask 安装未完成，请查看上方错误信息。"
+                fi
+                ;;
+            4)
+                init_state
+                print_advanced_profile_result "xhttp-reality" "show"
+                print_advanced_profile_result "enc-reality" "show"
+                print_advanced_profile_result "fullstack" "show"
+                ;;
+            5)
+                echo -e "\n${YELLOW}[删除高级协议组合]${PLAIN}"
+                echo " 1) 删除 VLESS XHTTP + REALITY"
+                echo " 2) 删除 VLESS Encryption + REALITY"
+                echo " 3) 删除 VLESS Encryption + XHTTP + REALITY + FinalMask"
+                echo " 4) 返回"
+                read -r -p "选项: " del_opt
+                case "$del_opt" in
+                    1) prepare_system && remove_advanced_profile_config "xhttp-reality" ;;
+                    2) prepare_system && remove_advanced_profile_config "enc-reality" ;;
+                    3) prepare_system && remove_advanced_profile_config "fullstack" ;;
+                    4 | "") ;;
+                    *) err "无效选项。" ;;
+                esac
+                ;;
+            6 | "") return 0 ;;
+            *) err "无效选项。" ;;
+        esac
+        echo
+        read -r -p "按回车继续..." || return 0
+    done
+}
+
 render_menu() {
     clear 2>/dev/null || true
     echo -e "${GREEN}==============================================${PLAIN}"
@@ -6144,7 +6925,8 @@ render_menu() {
     echo -e "${GREEN}13.${PLAIN} 开启/关闭增强安全屏蔽"
     echo -e "${GREEN}14.${PLAIN} 导出当前配置备份"
     echo -e "${GREEN}15.${PLAIN} Tunnel 中转管理"
-    echo -e "${GREEN}16.${PLAIN} 退出"
+    echo -e "${GREEN}16.${PLAIN} 高级协议组合"
+    echo -e "${GREEN}17.${PLAIN} 退出"
     echo -e "----------------------------------------------"
 }
 
@@ -6153,7 +6935,7 @@ show_menu() {
 
     while true; do
         render_menu
-        read -r -p "请输入选项 [1-16]: " MENU_CHOICE || exit 0
+        read -r -p "请输入选项 [1-17]: " MENU_CHOICE || exit 0
 
         case "$MENU_CHOICE" in
             1)
@@ -6224,7 +7006,10 @@ show_menu() {
             15)
                 configure_forward_menu || err "[失败] Tunnel 中转管理未完成，请查看上方错误信息。"
                 ;;
-            16) exit 0 ;;
+            16)
+                configure_advanced_profiles_menu || err "[失败] 高级协议组合未完成，请查看上方错误信息。"
+                ;;
+            17) exit 0 ;;
             *) err "错误选项。" ;;
         esac
 
@@ -6251,9 +7036,12 @@ run_view_command() {
             xhttp)
                 protocol="xhttp"
                 ;;
+            xhttp-reality | enc-reality | fullstack)
+                protocol="$1"
+                ;;
             *)
                 err "[失败] 未知 view 参数: $1"
-                echo "用法: ike view [ipv4|ipv6|dual] [doctor]"
+                echo "用法: ike view [ipv4|ipv6|dual] [doctor|reality|xhttp|xhttp-reality|enc-reality|fullstack]"
                 return 1
                 ;;
         esac
@@ -6274,6 +7062,9 @@ run_view_command() {
                 ;;
             xhttp)
                 print_vless_xhttp_finalmask_result "show"
+                ;;
+            xhttp-reality | enc-reality | fullstack)
+                print_advanced_profile_result "$protocol" "show"
                 ;;
         esac
         show_footer
@@ -6878,6 +7669,80 @@ doctor_xhttp() {
     diag_info "Encryption: $(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.encryption // empty" "$STATE_FILE" 2>/dev/null)"
 }
 
+doctor_advanced_profile() {
+    local kind="$1"
+    local tag state_key name network in path state_link config_has_fm state_enabled fm port
+
+    tag="$(advanced_profile_tag "$kind")" || return 1
+    state_key="$(advanced_profile_state_key "$kind")" || return 1
+    name="$(advanced_profile_name "$kind")" || return 1
+    network="$(advanced_profile_network "$kind")" || return 1
+
+    echo -e "\n${YELLOW}${name} 诊断${PLAIN}"
+    echo "----------------------------------------"
+    [[ -f "$CONFIG_FILE" ]] && diag_ok "config.json 存在" || diag_fail "config.json 不存在"
+    command -v jq >/dev/null 2>&1 && diag_ok "jq 存在" || diag_fail "jq 不存在"
+    if ! inbound_exists "$tag"; then
+        diag_info "${name} 未安装，跳过专项检查"
+        return 0
+    fi
+
+    in="$(jq -c --arg tag "$tag" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE")"
+    echo "$in" | jq -e --arg network "$network" '.protocol == "vless" and .streamSettings.network == $network and .streamSettings.security == "reality"' >/dev/null &&
+        diag_ok "inbound 协议/传输/REALITY 配置正确" ||
+        diag_fail "inbound 协议/传输/REALITY 配置异常"
+    echo "$in" | jq -e '(.settings.clients[0].id // "") != ""' >/dev/null && diag_ok "UUID 存在" || diag_fail "UUID 缺失"
+    echo "$in" | jq -e '(.streamSettings.realitySettings.privateKey // "") != ""' >/dev/null && diag_ok "privateKey 已写入服务端配置（默认不输出值）" || diag_fail "privateKey 缺失"
+    echo "$in" | jq -e '(.streamSettings.realitySettings.serverNames[0] // "") != "" and (.streamSettings.realitySettings.dest // "" | endswith(":443"))' >/dev/null &&
+        diag_ok "REALITY target/serverNames 已配置" ||
+        diag_fail "REALITY target/serverNames 配置异常"
+    echo "$in" | jq -e '(.streamSettings.realitySettings.shortIds | length) == 8' >/dev/null && diag_ok "shortIds 数量为 8" || diag_warn "shortIds 数量不是 8"
+
+    if advanced_profile_has_xhttp "$kind"; then
+        path="$(echo "$in" | jq -r '.streamSettings.xhttpSettings.path // empty')"
+        validate_xhttp_path "$path" && diag_ok "XHTTP path 合法: ${path}" || diag_fail "XHTTP path 非法: ${path}"
+    fi
+    if advanced_profile_has_encryption "$kind"; then
+        echo "$in" | jq -e '(.settings.decryption // "") != "" and .settings.decryption != "none"' >/dev/null &&
+            diag_ok "服务端 decryption 已写入（默认不输出值）" ||
+            diag_fail "服务端 decryption 缺失"
+        jq -e ".${state_key}.encryption" "$STATE_FILE" >/dev/null 2>&1 && diag_ok "客户端 encryption 已写入 state" || diag_warn "客户端 encryption 缺失"
+    fi
+    if [[ -f "$STATE_FILE" ]]; then
+        jq -e ".${state_key}.port and .${state_key}.uuid and .${state_key}.public_key and .${state_key}.default_short_id and .${state_key}.server_name and .${state_key}.link" "$STATE_FILE" >/dev/null 2>&1 &&
+            diag_ok "state 字段完整" ||
+            diag_warn "state 字段不完整"
+        state_link="$(jq -r ".${state_key}.link // empty" "$STATE_FILE" 2>/dev/null)"
+        [[ "$state_link" == *"security=reality"* && "$state_link" == *"pbk="* && "$state_link" == *"sid="* ]] && diag_ok "分享链接包含 REALITY 必要参数" || diag_warn "分享链接缺少部分 REALITY 参数"
+    else
+        diag_warn "installer-state.json 不存在"
+        state_link=""
+    fi
+    if advanced_profile_has_finalmask "$kind"; then
+        state_enabled="$(jq -r ".${state_key}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
+        config_has_fm="$(echo "$in" | jq -r '.streamSettings | has("finalmask")')"
+        if [[ "$state_enabled" == "true" ]]; then
+            [[ "$config_has_fm" == "true" ]] && diag_ok "FinalMask on 时 config 已写 finalmask" || diag_fail "FinalMask on 但 config 未写 finalmask"
+            [[ "$state_link" == *"fm="* ]] && diag_ok "分享链接包含 fm 参数" || diag_fail "分享链接缺少 fm 参数"
+            fm="${state_link#*fm=}"
+            fm="${fm%%#*}"
+            [[ "$fm" != *"{"* && "$fm" != *"}"* && "$fm" != *" "* && "$fm" != *"\""* ]] && diag_ok "fm 参数已 URL 编码" || diag_fail "fm 参数包含未编码 JSON 字符"
+        else
+            [[ "$config_has_fm" == "false" ]] && diag_ok "FinalMask off 时 config 未写 finalmask" || diag_fail "FinalMask off 时 config 仍存在 finalmask"
+            [[ "$state_link" != *"fm="* ]] && diag_ok "FinalMask off 时链接不含 fm" || diag_fail "FinalMask off 时链接仍含 fm"
+        fi
+    fi
+    port="$(echo "$in" | jq -r '.port // empty')"
+    if port_listening "$port"; then
+        diag_ok "入口端口正在监听: ${port}"
+    elif [[ $? -eq 2 ]]; then
+        diag_warn "未找到 ss，跳过端口监听检查"
+    else
+        diag_warn "入口端口未监听: ${port}"
+    fi
+    diag_info "Xray 配置校验: $(xray_config_test_status)"
+}
+
 doctor_proxy() {
     local tags ports
 
@@ -6918,6 +7783,9 @@ run_doctor_command() {
         reality-key) doctor_xray_x25519 ;;
         reality) doctor_reality ;;
         xhttp) doctor_xhttp ;;
+        xhttp-reality) doctor_advanced_profile "xhttp-reality" ;;
+        enc-reality) doctor_advanced_profile "enc-reality" ;;
+        fullstack) doctor_advanced_profile "fullstack" ;;
         proxy) doctor_proxy ;;
         all | "")
             preflight_system || true
@@ -6925,10 +7793,13 @@ run_doctor_command() {
             doctor_proxy
             doctor_reality
             doctor_xhttp
+            doctor_advanced_profile "xhttp-reality"
+            doctor_advanced_profile "enc-reality"
+            doctor_advanced_profile "fullstack"
             ;;
         *)
             err "[失败] 未知 doctor 参数: $target"
-            echo "用法: ike doctor preflight|reality-key|reality|xhttp|proxy|all"
+            echo "用法: ike doctor preflight|reality-key|reality|xhttp|xhttp-reality|enc-reality|fullstack|proxy|all"
             return 1
             ;;
     esac
@@ -7018,6 +7889,49 @@ smoke_xhttp() {
     diag_info "FinalMask: $(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
 }
 
+smoke_advanced_profile() {
+    local kind="$1"
+    local restart="${2:-false}"
+    local tag state_key name port fm_enabled
+
+    tag="$(advanced_profile_tag "$kind")" || return 1
+    state_key="$(advanced_profile_state_key "$kind")" || return 1
+    name="$(advanced_profile_name "$kind")" || return 1
+
+    echo -e "\n${YELLOW}${name} 烟测辅助${PLAIN}"
+    echo "----------------------------------------"
+    if ! inbound_exists "$tag"; then
+        diag_info "${name} 未安装，跳过 smoke"
+        return 0
+    fi
+    print_advanced_profile_result "$kind" "show"
+    if ! run_xray_config_test_verbose; then
+        if advanced_profile_has_finalmask "$kind"; then
+            fm_enabled="$(jq -r ".${state_key}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
+            [[ "$fm_enabled" == "true" ]] && print_finalmask_failure_hint
+        fi
+        print_apply_failure_hint "$kind"
+    fi
+    if [[ "$restart" == "true" ]]; then
+        if restart_xray_service; then
+            diag_ok "xray restart 成功"
+        else
+            diag_fail "xray restart 失败，最近日志如下"
+            show_journal_recent
+        fi
+    else
+        diag_info "默认不自动 restart；如需重启请执行: ike smoke ${kind} --restart"
+    fi
+    port="$(jq -r --arg tag "$tag" '.inbounds[]? | select(.tag == $tag).port // empty' "$CONFIG_FILE")"
+    if port_listening "$port"; then
+        diag_ok "入口端口正在监听: ${port}"
+    else
+        diag_warn "入口端口未监听或 ss 不可用: ${port}"
+    fi
+    diag_info "Xray 服务状态: $(xray_service_status)"
+    show_journal_recent
+}
+
 run_smoke_command() {
     local target="${1:-all}"
     local restart="false"
@@ -7030,7 +7944,7 @@ run_smoke_command() {
                 ;;
             *)
                 err "[失败] 未知 smoke 参数: $1"
-                echo "用法: ike smoke reality|xhttp|all [--restart]"
+                echo "用法: ike smoke reality|xhttp|xhttp-reality|enc-reality|fullstack|all [--restart]"
                 return 1
                 ;;
         esac
@@ -7040,14 +7954,20 @@ run_smoke_command() {
     case "$target" in
         reality) smoke_reality "$restart" ;;
         xhttp) smoke_xhttp "$restart" ;;
+        xhttp-reality) smoke_advanced_profile "xhttp-reality" "$restart" ;;
+        enc-reality) smoke_advanced_profile "enc-reality" "$restart" ;;
+        fullstack) smoke_advanced_profile "fullstack" "$restart" ;;
         all | "")
             smoke_reality "$restart"
             smoke_xhttp "$restart"
+            smoke_advanced_profile "xhttp-reality" "$restart"
+            smoke_advanced_profile "enc-reality" "$restart"
+            smoke_advanced_profile "fullstack" "$restart"
             doctor_proxy
             ;;
         *)
             err "[失败] 未知 smoke 目标: $target"
-            echo "用法: ike smoke reality|xhttp|all [--restart]"
+            echo "用法: ike smoke reality|xhttp|xhttp-reality|enc-reality|fullstack|all [--restart]"
             return 1
             ;;
     esac
@@ -7110,6 +8030,26 @@ render_export_report() {
         echo "  未安装"
     fi
     echo
+    echo "高级协议组合摘要:"
+    if inbound_exists "$VLESS_XHTTP_REALITY_TAG"; then
+        jq -r --arg tag "$VLESS_XHTTP_REALITY_TAG" '.inbounds[]? | select(.tag == $tag) | "  XHTTP-Reality port=\(.port) path=\(.streamSettings.xhttpSettings.path // "") sni=\(.streamSettings.realitySettings.serverNames[0] // "")"' "$CONFIG_FILE"
+        jq -r ".${VLESS_XHTTP_REALITY_STATE_KEY} // {} | \"    publicKey=\(.public_key // \"\") shortId=\(.default_short_id // \"\")\"" "$STATE_FILE" 2>/dev/null
+    else
+        echo "  XHTTP-Reality: 未安装"
+    fi
+    if inbound_exists "$VLESS_ENC_REALITY_TAG"; then
+        jq -r --arg tag "$VLESS_ENC_REALITY_TAG" '.inbounds[]? | select(.tag == $tag) | "  Enc-Reality port=\(.port) sni=\(.streamSettings.realitySettings.serverNames[0] // "")"' "$CONFIG_FILE"
+        jq -r ".${VLESS_ENC_REALITY_STATE_KEY} // {} | \"    publicKey=\(.public_key // \"\") shortId=\(.default_short_id // \"\")\"" "$STATE_FILE" 2>/dev/null
+    else
+        echo "  Enc-Reality: 未安装"
+    fi
+    if inbound_exists "$VLESS_FULLSTACK_TAG"; then
+        jq -r --arg tag "$VLESS_FULLSTACK_TAG" '.inbounds[]? | select(.tag == $tag) | "  FullStack port=\(.port) path=\(.streamSettings.xhttpSettings.path // "") sni=\(.streamSettings.realitySettings.serverNames[0] // "") finalmask=\(.streamSettings | has("finalmask"))"' "$CONFIG_FILE"
+        jq -r ".${VLESS_FULLSTACK_STATE_KEY} // {} | \"    publicKey=\(.public_key // \"\") shortId=\(.default_short_id // \"\") finalmask_enabled=\(.finalmask_enabled // false)\"" "$STATE_FILE" 2>/dev/null
+    else
+        echo "  FullStack: 未安装"
+    fi
+    echo
     echo "最近日志摘要:"
     if command -v journalctl >/dev/null 2>&1; then
         journalctl -u "$SERVICE_NAME" -n 20 --no-pager 2>/dev/null | redact_sensitive_stream || true
@@ -7135,6 +8075,10 @@ render_export_clients() {
     if [[ -f "$STATE_FILE" ]] && jq -e ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_enabled == true" "$STATE_FILE" >/dev/null 2>&1; then
         echo
         echo "提示: 如客户端无法导入，请手动填写 path/encryption/finalmask。"
+    fi
+    if [[ -f "$STATE_FILE" ]] && jq -e ".${VLESS_FULLSTACK_STATE_KEY}.finalmask_enabled == true" "$STATE_FILE" >/dev/null 2>&1; then
+        echo
+        echo "提示: FullStack 链接较长，如客户端无法导入，请手动填写 path/encryption/reality/finalmask。"
     fi
 }
 
@@ -7706,6 +8650,169 @@ run_xhttp_command() {
     esac
 }
 
+show_advanced_profile_usage() {
+    local kind="$1"
+
+    case "$kind" in
+        xhttp-reality)
+            cat <<'EOF'
+用法:
+  ike xhttp-reality install [--port PORT] [--path /path] [--sni DOMAIN] [--dry-run] [--yes]
+  ike xhttp-reality show
+  ike xhttp-reality remove
+  ike view xhttp-reality
+EOF
+            ;;
+        enc-reality)
+            cat <<'EOF'
+用法:
+  ike enc-reality install [--port PORT] [--sni DOMAIN] [--dry-run] [--yes] [--auth x25519|mlkem768]
+  ike enc-reality show
+  ike enc-reality remove
+  ike view enc-reality
+EOF
+            ;;
+        fullstack)
+            cat <<'EOF'
+用法:
+  ike fullstack install [--port PORT] [--path /path] [--sni DOMAIN] [--finalmask on|off] [--dry-run] [--yes] [--auth x25519|mlkem768]
+  ike fullstack show
+  ike fullstack remove
+  ike view fullstack
+EOF
+            ;;
+    esac
+}
+
+run_advanced_profile_command() {
+    local kind="$1"
+    local action="${2:-show}"
+
+    case "$action" in
+        help | -h | --help)
+            show_advanced_profile_usage "$kind"
+            ;;
+        install)
+            shift 2
+            ADVANCED_PORT_REQUEST=""
+            ADVANCED_PATH_REQUEST=""
+            ADVANCED_SNI_REQUEST=""
+            ADVANCED_FINALMASK_REQUEST="true"
+            ADVANCED_FINALMASK_SPECIFIED="false"
+            ADVANCED_AUTH_SPECIFIED="false"
+            ADVANCED_ASSUME_YES="false"
+            ADVANCED_DRY_RUN="false"
+            VLESS_MODE="basic"
+            VLESS_AUTH="x25519"
+            VLESS_ENC_METHOD="native"
+            VLESS_CLIENT_RTT="0rtt"
+            VLESS_SERVER_TICKET="600s"
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --port)
+                        ADVANCED_PORT_REQUEST="${2:-}"
+                        shift 2
+                        ;;
+                    --path)
+                        ADVANCED_PATH_REQUEST="${2:-}"
+                        shift 2
+                        ;;
+                    --sni)
+                        ADVANCED_SNI_REQUEST="${2:-}"
+                        shift 2
+                        ;;
+                    --finalmask)
+                        ADVANCED_FINALMASK_REQUEST="${2:-}"
+                        ADVANCED_FINALMASK_SPECIFIED="true"
+                        shift 2
+                        ;;
+                    --auth)
+                        VLESS_AUTH="${2:-}"
+                        ADVANCED_AUTH_SPECIFIED="true"
+                        shift 2
+                        ;;
+                    --enc-method)
+                        VLESS_ENC_METHOD="${2:-}"
+                        VLESS_MODE="advanced"
+                        ADVANCED_AUTH_SPECIFIED="true"
+                        shift 2
+                        ;;
+                    --rtt)
+                        VLESS_CLIENT_RTT="${2:-}"
+                        VLESS_MODE="advanced"
+                        ADVANCED_AUTH_SPECIFIED="true"
+                        shift 2
+                        ;;
+                    --ticket)
+                        VLESS_SERVER_TICKET="${2:-}"
+                        VLESS_MODE="advanced"
+                        ADVANCED_AUTH_SPECIFIED="true"
+                        shift 2
+                        ;;
+                    --yes | -y)
+                        ADVANCED_ASSUME_YES="true"
+                        shift
+                        ;;
+                    --dry-run)
+                        ADVANCED_DRY_RUN="true"
+                        REALITY_SKIP_TLS_TEST="${REALITY_SKIP_TLS_TEST:-1}"
+                        shift
+                        ;;
+                    help | -h | --help)
+                        show_advanced_profile_usage "$kind"
+                        return 0
+                        ;;
+                    *)
+                        err "[失败] 未知 ${kind} install 参数: $1"
+                        show_advanced_profile_usage "$kind"
+                        return 1
+                        ;;
+                esac
+            done
+            if [[ -n "$ADVANCED_PATH_REQUEST" ]] && ! advanced_profile_has_xhttp "$kind"; then
+                err "[高级组合] ${kind} 不支持 --path。"
+                return 1
+            fi
+            if [[ "$ADVANCED_FINALMASK_SPECIFIED" == "true" ]] && ! advanced_profile_has_finalmask "$kind"; then
+                err "[高级组合] ${kind} 不支持 --finalmask。"
+                return 1
+            fi
+            if [[ "$ADVANCED_AUTH_SPECIFIED" == "true" ]] && ! advanced_profile_has_encryption "$kind"; then
+                err "[高级组合] ${kind} 不支持 VLESS Encryption 参数。"
+                return 1
+            fi
+            if advanced_profile_has_encryption "$kind"; then
+                case "$VLESS_AUTH" in
+                    x25519 | mlkem768) ;;
+                    *)
+                        err "[高级组合] --auth 仅支持 x25519 或 mlkem768。"
+                        return 1
+                        ;;
+                esac
+            fi
+            if [[ "$ADVANCED_DRY_RUN" == "true" ]]; then
+                configure_advanced_profile "$kind" "dry-run" && install_advanced_profile "$kind"
+            else
+                prepare_system || return 1
+                configure_advanced_profile "$kind" "cli" && install_advanced_profile "$kind"
+            fi
+            ;;
+        show | "")
+            init_state
+            print_advanced_profile_result "$kind" "show"
+            ;;
+        remove | delete | del)
+            prepare_system || return 1
+            remove_advanced_profile_config "$kind"
+            ;;
+        *)
+            err "[失败] 未知 ${kind} 参数: $action"
+            show_advanced_profile_usage "$kind"
+            return 1
+            ;;
+    esac
+}
+
 run_forward_command() {
     run_tunnel_command "$@"
 }
@@ -7728,8 +8835,14 @@ Xray-OneClick 命令帮助
   ike doctor reality-key
   ike doctor reality
   ike doctor xhttp
+  ike doctor xhttp-reality
+  ike doctor enc-reality
+  ike doctor fullstack
   ike smoke reality
   ike smoke xhttp --restart
+  ike smoke xhttp-reality
+  ike smoke enc-reality --restart
+  ike smoke fullstack --restart
   ike export report --output /root/xray-report.txt
   ike export clients --output /root/xray-clients.txt
   ike update
@@ -7772,6 +8885,25 @@ Xray-OneClick 命令帮助
   ike xhttp remove
   ike view reality
   ike view xhttp
+  ike xhttp-reality install
+  ike xhttp-reality install --dry-run
+  ike xhttp-reality install --port 30006 --path /api/test --sni www.abmindustriesgroup.com
+  ike xhttp-reality show
+  ike xhttp-reality remove
+  ike enc-reality install
+  ike enc-reality install --dry-run
+  ike enc-reality install --port 30007 --sni www.abmindustriesgroup.com
+  ike enc-reality show
+  ike enc-reality remove
+  ike fullstack install
+  ike fullstack install --dry-run
+  ike fullstack install --port 30008 --path /api/test --sni www.abmindustriesgroup.com --finalmask on
+  ike fullstack install --port 30008 --path /api/test --sni www.abmindustriesgroup.com --finalmask off
+  ike fullstack show
+  ike fullstack remove
+  ike view xhttp-reality
+  ike view enc-reality
+  ike view fullstack
   ike tunnel list
   ike tunnel add
   ike tunnel add safe
@@ -7835,7 +8967,7 @@ main() {
             show_version
             return 0
             ;;
-        "" | preflight | view | doctor | smoke | export | xray | migrate | uninstall | update | backup | endpoint | config | service | logs | cnblock | safety | tunnel | forward | reality | xhttp | bootstrap) ;;
+        "" | preflight | view | doctor | smoke | export | xray | migrate | uninstall | update | backup | endpoint | config | service | logs | cnblock | safety | tunnel | forward | reality | xhttp | xhttp-reality | enc-reality | fullstack | bootstrap) ;;
         *)
             err "[失败] 未知命令: $1"
             echo "运行 ike help 查看可用命令。"
@@ -7930,6 +9062,15 @@ main() {
         xhttp)
             shift
             run_xhttp_command "$@"
+            ;;
+        xhttp-reality)
+            run_advanced_profile_command "xhttp-reality" "${2:-show}" "${@:3}"
+            ;;
+        enc-reality)
+            run_advanced_profile_command "enc-reality" "${2:-show}" "${@:3}"
+            ;;
+        fullstack)
+            run_advanced_profile_command "fullstack" "${2:-show}" "${@:3}"
             ;;
         bootstrap)
             run_bootstrap_command
