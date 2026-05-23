@@ -19,7 +19,7 @@ LEGACY_SHORTCUT_PATH="/usr/local/bin/sb"
 INSTALLER_DIR="/usr/local/share/ike"
 INSTALLER_PATH="${INSTALLER_DIR}/install.sh"
 SCRIPT_NAME="Xray-OneClick"
-SCRIPT_VERSION="1.1.1"
+SCRIPT_VERSION="1.1.2"
 REPO_URL="https://github.com/ike-sh/Xray-OneClick"
 RAW_SCRIPT_URL="https://raw.githubusercontent.com/ike-sh/Xray-OneClick/main/install.sh"
 XRAY_RELEASE_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
@@ -1168,23 +1168,61 @@ ask_port() {
     done
 }
 
+detect_global_ipv6() {
+    if [[ ${XRAY_ONECLICK_TEST_GLOBAL_IPV6+x} ]]; then
+        printf '%s' "$XRAY_ONECLICK_TEST_GLOBAL_IPV6"
+        [[ -n "$XRAY_ONECLICK_TEST_GLOBAL_IPV6" ]]
+        return
+    fi
+    command -v ip >/dev/null 2>&1 || return 1
+    ip -o -6 addr show scope global 2>/dev/null |
+        awk '$0 !~ / tentative| dadfailed| deprecated/ {
+          for (i = 1; i <= NF; i++) {
+            if ($i == "inet6") {
+              split($(i + 1), addr, "/")
+              print addr[1]
+              exit
+            }
+          }
+        }'
+}
+
+is_system_ipv6_disabled() {
+    local all_value default_value
+
+    if [[ ${XRAY_ONECLICK_TEST_IPV6_DISABLE_ALL+x} ]]; then
+        all_value="$XRAY_ONECLICK_TEST_IPV6_DISABLE_ALL"
+    else
+        all_value="$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null || echo 0)"
+    fi
+    if [[ ${XRAY_ONECLICK_TEST_IPV6_DISABLE_DEFAULT+x} ]]; then
+        default_value="$XRAY_ONECLICK_TEST_IPV6_DISABLE_DEFAULT"
+    else
+        default_value="$(sysctl -n net.ipv6.conf.default.disable_ipv6 2>/dev/null || echo 0)"
+    fi
+
+    [[ "$all_value" == "1" || "$default_value" == "1" ]]
+}
+
 check_ipv6_status() {
-    local ipv6_disabled ipv6_global_addr
-    ipv6_disabled="$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null || echo 1)"
-    ipv6_global_addr="$(ip -6 addr show scope global 2>/dev/null | awk '/inet6/{print $2}' | head -n 1 | cut -d'/' -f1)"
+    local ipv6_global_addr
 
-    if [[ "$ipv6_disabled" != "0" ]]; then
-        err "[IPv6] 系统未开启 IPv6 (net.ipv6.conf.all.disable_ipv6=${ipv6_disabled})"
+    ipv6_global_addr="$(detect_global_ipv6 || true)"
+    if [[ -n "$ipv6_global_addr" ]]; then
+        if is_system_ipv6_disabled; then
+            info "[IPv6] sysctl 显示 disable_ipv6=1，但检测到全局 IPv6 地址：${ipv6_global_addr}，按实际地址继续。"
+        fi
+        ok "[IPv6] 可用，检测到全局地址: ${ipv6_global_addr}"
+        return 0
+    fi
+
+    if is_system_ipv6_disabled; then
+        err "[IPv6] 系统未开启 IPv6，且未检测到全局 IPv6 地址。"
         return 1
     fi
 
-    if [[ -z "$ipv6_global_addr" ]]; then
-        err "[IPv6] 未检测到全局 IPv6 地址，无法生成可用节点。"
-        return 1
-    fi
-
-    ok "[IPv6] 可用，检测到地址: ${ipv6_global_addr}"
-    return 0
+    err "[IPv6] 未检测到全局 IPv6 地址，无法生成可用节点。"
+    return 1
 }
 
 b64_no_wrap() {
@@ -1315,6 +1353,109 @@ split_endpoint_for_link() {
     printf '%s\t%s' "$host" "$port"
 }
 
+protocol_listen_scope() {
+    local listen="${1:-}"
+
+    case "$listen" in
+        "")
+            printf '%s' "unknown"
+            ;;
+        "0.0.0.0" | 127.*)
+            printf '%s' "ipv4"
+            ;;
+        "::" | "[::]")
+            printf '%s' "dual"
+            ;;
+        *:*)
+            printf '%s' "ipv6"
+            ;;
+        *.*)
+            printf '%s' "ipv4"
+            ;;
+        *)
+            printf '%s' "unknown"
+            ;;
+    esac
+}
+
+config_inbound_listen_scope() {
+    local tag="$1"
+    local listen
+
+    [[ -f "$CONFIG_FILE" ]] || {
+        printf '%s' "unknown"
+        return 0
+    }
+    listen="$(jq -r --arg tag "$tag" '.inbounds[]? | select(.tag == $tag).listen // empty' "$CONFIG_FILE" 2>/dev/null | head -n 1)"
+    protocol_listen_scope "$listen"
+}
+
+state_listen_scope() {
+    local state_key="$1"
+    local scope
+
+    [[ -n "$state_key" && -f "$STATE_FILE" ]] || return 1
+    scope="$(jq -r --arg key "$state_key" '.[$key].listen_scope // empty' "$STATE_FILE" 2>/dev/null)"
+    [[ -n "$scope" && "$scope" != "null" ]] || return 1
+    printf '%s' "$scope"
+}
+
+inbound_supports_ipv6() {
+    local tag="$1"
+    local state_key="${2:-}"
+    local scope
+
+    scope="$(state_listen_scope "$state_key" 2>/dev/null || true)"
+    [[ -n "$scope" ]] || scope="$(config_inbound_listen_scope "$tag")"
+    [[ "$scope" == "ipv6" || "$scope" == "dual" ]]
+}
+
+should_print_ipv6_link() {
+    local mode="$1"
+    local tag="$2"
+    local state_key="${3:-}"
+
+    [[ "$mode" == "dual" || "$mode" == "ipv6" ]] || return 1
+    [[ -n "${IPV6_HOST:-}" ]] || return 1
+    inbound_supports_ipv6 "$tag" "$state_key"
+}
+
+print_ipv6_status_hint() {
+    local tag="$1"
+    local state_key="${2:-}"
+
+    if [[ -z "${IPV6_HOST:-}" ]]; then
+        echo "IPv6链接: 未输出（未检测到全局 IPv6 endpoint）"
+    elif ! inbound_supports_ipv6 "$tag" "$state_key"; then
+        echo "IPv6链接: 未输出（当前协议未监听 IPv6）"
+    else
+        echo "IPv6链接: 未输出（当前链接显示模式未启用 IPv6）"
+    fi
+}
+
+link_endpoint_for_tag() {
+    local port="$1"
+    local tag="$2"
+    local state_key="${3:-}"
+    local mode="${CURRENT_LINK_VIEW_MODE:-dual}"
+
+    case "$mode" in
+        ipv6)
+            if should_print_ipv6_link "$mode" "$tag" "$state_key"; then
+                split_endpoint_for_link "$port" "$IPV6_HOST"
+            else
+                printf '%s\t%s' "YOUR_SERVER" "$port"
+            fi
+            ;;
+        ipv4)
+            split_endpoint_for_link "$port" "${IPV4_HOST:-}"
+            ;;
+        *)
+            split_endpoint_for_link "$port"
+            ;;
+    esac
+}
+
 generate_ss2022_password() {
     local method="$1"
     local bytes="32"
@@ -1359,6 +1500,27 @@ configure_ss2022() {
 
     info "[SS2022] 监听模式: ${listen_mode} (${SS_LISTEN})"
     return 0
+}
+
+state_set_ss2022() {
+    init_state
+    local tmp listen_scope
+
+    listen_scope="$(protocol_listen_scope "${SS_LISTEN:-}")"
+    tmp="$(mktemp)" || return 1
+    jq --arg tag "$SS_TAG" \
+        --arg port "$SS_PORT" \
+        --arg listen "${SS_LISTEN:-}" \
+        --arg listen_scope "$listen_scope" '
+        .ss2022 = {
+          "tag": $tag,
+          "port": ($port|tonumber),
+          "listen": $listen,
+          "listen_scope": $listen_scope
+        }
+       ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
+    rm -f "$tmp"
+    ensure_config_security
 }
 
 install_ss2022() {
@@ -1414,6 +1576,7 @@ install_ss2022() {
         err "[失败] [SS2022] 应用配置失败。"
         return 1
     fi
+    state_set_ss2022 || err "[状态] SS2022 状态写入失败，但 config.json 已生效。"
     state_set_meta_action "安装 SS2022" || err "[状态] 最近变更记录失败。"
     ok "[完成] SS2022 已写入 Xray 配置。"
     view_config
@@ -1627,7 +1790,8 @@ state_set_vless() {
         --arg enc_method "$VLESS_ENC_METHOD" \
         --arg client_rtt "$VLESS_CLIENT_RTT" \
         --arg server_ticket "$VLESS_SERVER_TICKET" \
-        --arg port "$VLESS_PORT" '
+        --arg port "$VLESS_PORT" \
+        --arg listen_scope "$(protocol_listen_scope "${VLESS_LISTEN:-}")" '
         .vless_encryption = {
           "tag": $tag,
           "uuid": $uuid,
@@ -1637,7 +1801,8 @@ state_set_vless() {
           "enc_method": $enc_method,
           "client_rtt": $client_rtt,
           "server_ticket": $server_ticket,
-          "port": ($port|tonumber)
+          "port": ($port|tonumber),
+          "listen_scope": $listen_scope
         }
        ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
     rm -f "$tmp"
@@ -2024,7 +2189,7 @@ build_reality_share_link() {
     fi
 
     [[ -n "$port" && -n "$uuid" && -n "$public_key" && -n "$short_id" && -n "$server_name" ]] || return 1
-    endpoint_pair="$(split_endpoint_for_link "$port")"
+    endpoint_pair="$(link_endpoint_for_tag "$port" "$REALITY_TAG" "$REALITY_STATE_KEY")"
     IFS=$'\t' read -r host link_port <<<"$endpoint_pair"
     pbk_uri="$(url_encode "$public_key")"
     sni_uri="$(url_encode "$server_name")"
@@ -2062,6 +2227,7 @@ state_set_reality() {
         --arg server_name "$REALITY_SERVER_NAME" \
         --arg flow "$flow" \
         --arg hash32 "$hash32" \
+        --arg listen_scope "ipv4" \
         --arg created_at "$timestamp" \
         --arg link "$link" \
         --arg clients_empty "$clients_empty" '
@@ -2075,6 +2241,7 @@ state_set_reality() {
           "default_short_id": $default_short_id,
           "server_name": $server_name,
           "flow": $flow,
+          "listen_scope": $listen_scope,
           "spider_x": env.REALITY_JQ_SPIDER_X,
           "empty_clients": ($clients_empty == "true"),
           "created_at": $created_at,
@@ -2301,13 +2468,16 @@ print_reality_result() {
     spider_x="$(jq -r ".${REALITY_STATE_KEY}.spider_x // \"/\"" "$STATE_FILE" 2>/dev/null)"
     private_hint="$(jq -r ".${REALITY_STATE_KEY}.private_key // empty" "$STATE_FILE" 2>/dev/null)"
     flow="$(jq -r ".${REALITY_STATE_KEY}.flow // \"$REALITY_FLOW_DEFAULT\"" "$STATE_FILE" 2>/dev/null)"
-    endpoint_pair="$(split_endpoint_for_link "$port")"
+    endpoint_pair="$(link_endpoint_for_tag "$port" "$REALITY_TAG" "$REALITY_STATE_KEY")"
     IFS=$'\t' read -r address link_port <<<"$endpoint_pair"
 
     echo -e "\n${YELLOW}--- VLESS TCP REALITY ---${PLAIN}"
     echo -e "入口端口: ${port}"
     echo -e "Defender: 127.0.0.1:${defender_port} -> ${server_name}:443"
     [[ -n "$link" ]] && echo -e "VLESS URL / v2rayN / sing-box 通用链接: ${link}"
+    if [[ "${CURRENT_LINK_VIEW_MODE:-dual}" == "ipv6" ]] && ! should_print_ipv6_link "ipv6" "$REALITY_TAG" "$REALITY_STATE_KEY"; then
+        print_ipv6_status_hint "$REALITY_TAG" "$REALITY_STATE_KEY"
+    fi
     echo "手动参数:"
     echo "  Protocol: VLESS"
     echo "  Transport: TCP"
@@ -2500,7 +2670,7 @@ build_vless_xhttp_finalmask_share_link() {
     fi
 
     [[ -n "$port" && -n "$path" && -n "$uuid" && -n "$encryption" ]] || return 1
-    endpoint_pair="$(split_endpoint_for_link "$port")"
+    endpoint_pair="$(link_endpoint_for_tag "$port" "$VLESS_XHTTP_FM_TAG" "$VLESS_XHTTP_FM_STATE_KEY")"
     IFS=$'\t' read -r host link_port <<<"$endpoint_pair"
     enc_uri="$(url_encode "$encryption")"
     path_uri="$(url_encode "$path")"
@@ -2537,6 +2707,7 @@ state_set_vless_xhttp_finalmask() {
         --arg server_ticket "$VLESS_SERVER_TICKET" \
         --arg finalmask_enabled "$XHTTP_FINALMASK_ENABLED" \
         --argjson finalmask_json "$finalmask_json" \
+        --arg listen_scope "ipv4" \
         --arg created_at "$timestamp" \
         --arg link "$link" '
         .vless_xhttp_finalmask = {
@@ -2551,6 +2722,7 @@ state_set_vless_xhttp_finalmask() {
           "server_ticket": $server_ticket,
           "finalmask_enabled": ($finalmask_enabled == "true"),
           "finalmask_json": $finalmask_json,
+          "listen_scope": $listen_scope,
           "created_at": $created_at,
           "link": $link
         }
@@ -2695,7 +2867,7 @@ print_vless_xhttp_finalmask_result() {
     ticket="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.server_ticket // empty" "$STATE_FILE" 2>/dev/null)"
     fm_enabled="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
     fm_json="$(jq -c ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_json // empty" "$STATE_FILE" 2>/dev/null)"
-    endpoint_pair="$(split_endpoint_for_link "$port")"
+    endpoint_pair="$(link_endpoint_for_tag "$port" "$VLESS_XHTTP_FM_TAG" "$VLESS_XHTTP_FM_STATE_KEY")"
     IFS=$'\t' read -r address link_port <<<"$endpoint_pair"
 
     echo -e "\n${YELLOW}--- VLESS Encryption + XHTTP + FinalMask ---${PLAIN}"
@@ -2707,6 +2879,9 @@ print_vless_xhttp_finalmask_result() {
         echo -e "FinalMask: off（未启用 FinalMask）"
     fi
     [[ -n "$link" ]] && echo -e "VLESS URL: ${link}"
+    if [[ "${CURRENT_LINK_VIEW_MODE:-dual}" == "ipv6" ]] && ! should_print_ipv6_link "ipv6" "$VLESS_XHTTP_FM_TAG" "$VLESS_XHTTP_FM_STATE_KEY"; then
+        print_ipv6_status_hint "$VLESS_XHTTP_FM_TAG" "$VLESS_XHTTP_FM_STATE_KEY"
+    fi
     if [[ ${#link} -gt 1800 ]]; then
         info "[XHTTP] FinalMask 链接较长，部分客户端可能需要手动填写参数。"
     fi
@@ -3150,7 +3325,7 @@ build_advanced_share_link() {
         [[ -n "$encryption" ]] || return 1
     fi
 
-    endpoint_pair="$(split_endpoint_for_link "$port")"
+    endpoint_pair="$(link_endpoint_for_tag "$port" "$(advanced_profile_tag "$kind")" "$state_key")"
     IFS=$'\t' read -r host link_port <<<"$endpoint_pair"
     name="$(advanced_profile_link_name "$kind")"
     pbk_uri="$(url_encode "$public_key")"
@@ -3211,6 +3386,7 @@ state_set_advanced_profile() {
         --arg finalmask_enabled "${ADVANCED_FINALMASK_ENABLED:-false}" \
         --argjson finalmask_json "$finalmask_json" \
         --arg hash32 "$hash32" \
+        --arg listen_scope "ipv4" \
         --arg created_at "$timestamp" \
         --arg link "$link" '
         .[$state_key] = {
@@ -3223,6 +3399,7 @@ state_set_advanced_profile() {
           "short_ids": $short_ids,
           "default_short_id": $default_short_id,
           "server_name": $server_name,
+          "listen_scope": $listen_scope,
           "spider_x": env.ADVANCED_SPIDER_X,
           "created_at": $created_at,
           "link": $link
@@ -3412,7 +3589,7 @@ print_advanced_profile_result() {
     spider_x="$(jq -r ".${state_key}.spider_x // \"/\"" "$STATE_FILE" 2>/dev/null)"
     fm_enabled="$(jq -r ".${state_key}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
     fm_json="$(jq -c ".${state_key}.finalmask_json // empty" "$STATE_FILE" 2>/dev/null)"
-    endpoint_pair="$(split_endpoint_for_link "$port")"
+    endpoint_pair="$(link_endpoint_for_tag "$port" "$(advanced_profile_tag "$kind")" "$state_key")"
     IFS=$'\t' read -r address link_port <<<"$endpoint_pair"
 
     echo -e "\n${YELLOW}--- ${name} ---${PLAIN}"
@@ -3421,6 +3598,9 @@ print_advanced_profile_result() {
     echo -e "REALITY target: ${server_name}:443"
     advanced_profile_has_finalmask "$kind" && echo -e "FinalMask: $([[ "$fm_enabled" == "true" ]] && printf on || printf 'off（未启用 FinalMask）')"
     [[ -n "$link" ]] && echo -e "VLESS URL: ${link}"
+    if [[ "${CURRENT_LINK_VIEW_MODE:-dual}" == "ipv6" ]] && ! should_print_ipv6_link "ipv6" "$(advanced_profile_tag "$kind")" "$state_key"; then
+        print_ipv6_status_hint "$(advanced_profile_tag "$kind")" "$state_key"
+    fi
     if [[ ${#link} -gt 1800 ]]; then
         info "[高级组合] 链接较长，部分客户端可能需要手动填写参数。"
     fi
@@ -3480,6 +3660,26 @@ remove_advanced_profile_config() {
     ok "[完成] ${name} 已删除。"
 }
 
+state_set_socks5() {
+    init_state
+    local tmp
+
+    tmp="$(mktemp)" || return 1
+    jq --arg tag "$SOCKS_TAG" \
+        --arg port "$S_PORT" \
+        --arg listen "0.0.0.0" \
+        --arg listen_scope "ipv4" '
+        .socks5 = {
+          "tag": $tag,
+          "port": ($port|tonumber),
+          "listen": $listen,
+          "listen_scope": $listen_scope
+        }
+       ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
+    rm -f "$tmp"
+    ensure_config_security
+}
+
 install_socks5() {
     echo -e "\n${YELLOW}[配置] SOCKS5 参数:${PLAIN}"
     ask_port "SOCKS5 端口" "1080" S_PORT
@@ -3513,6 +3713,7 @@ install_socks5() {
     rm -f "$tmp"
 
     apply_config || return 1
+    state_set_socks5 || err "[状态] SOCKS5 状态写入失败，但 config.json 已生效。"
     state_set_meta_action "安装 SOCKS5" || err "[状态] 最近变更记录失败。"
     ok "[完成] SOCKS5 已写入 Xray 配置。"
     view_config
@@ -3522,9 +3723,7 @@ get_public_addresses() {
     PUBLIC_IPV4="$(detect_public_ip "4" | awk -F '\t' 'NF{print $1; exit}')"
     PUBLIC_IPV6="$(detect_public_ip "6" | awk -F '\t' 'NF{print $1; exit}')"
 
-    if [[ -z "$PUBLIC_IPV6" ]]; then
-        PUBLIC_IPV6="$(ip -6 addr show scope global 2>/dev/null | awk '/inet6/{print $2}' | head -n 1 | cut -d'/' -f1)"
-    fi
+    [[ -n "$PUBLIC_IPV6" ]] || PUBLIC_IPV6="$(detect_global_ipv6 || true)"
     if [[ -z "$PUBLIC_IPV4" ]]; then
         PUBLIC_IPV4="$(hostname -I 2>/dev/null | awk '{print $1}')"
     fi
@@ -3782,7 +3981,7 @@ EOF
 
 get_local_addresses() {
     PUBLIC_IPV4="$(hostname -I 2>/dev/null | tr ' ' '\n' | awk '/^[0-9]+\./{print; exit}')"
-    PUBLIC_IPV6="$(ip -6 addr show scope global 2>/dev/null | awk '/inet6/{print $2}' | head -n 1 | cut -d'/' -f1)"
+    PUBLIC_IPV6="$(detect_global_ipv6 || true)"
 }
 
 host_candidates() {
@@ -6504,6 +6703,7 @@ view_config() {
         get_local_addresses
     fi
     host_candidates "$mode"
+    CURRENT_LINK_VIEW_MODE="$mode"
 
     echo -e "\n${GREEN}========= 当前 Xray 配置信息 =========${PLAIN}"
     if [[ "$detail" == "doctor" ]]; then
@@ -6548,7 +6748,11 @@ view_config() {
         echo -e "加密: ${ssm}"
         echo -e "密码: ${ssw}"
         [[ -n "$IPV4_HOST" ]] && echo -e "IPv4链接: ss://${user_info}@${IPV4_HOST}:${ssp}#SS2022-IPv4"
-        [[ -n "$IPV6_HOST" ]] && echo -e "IPv6链接: ss://${user_info}@${IPV6_HOST}:${ssp}#SS2022-IPv6"
+        if should_print_ipv6_link "$mode" "$SS_TAG" "ss2022"; then
+            echo -e "IPv6链接: ss://${user_info}@${IPV6_HOST}:${ssp}#SS2022-IPv6"
+        elif [[ "$mode" == "ipv6" ]]; then
+            print_ipv6_status_hint "$SS_TAG" "ss2022"
+        fi
     fi
 
     local vless_in vp vu venc vmode vmethod vrtt vticket venc_uri
@@ -6575,7 +6779,11 @@ view_config() {
             echo -e "客户端 encryption: ${venc}"
             venc_uri="$(url_encode "$venc")"
             [[ -n "$IPV4_HOST" ]] && echo -e "IPv4链接: vless://${vu}@${IPV4_HOST}:${vp}?type=tcp&security=none&encryption=${venc_uri}#VLESS-ENC-IPv4"
-            [[ -n "$IPV6_HOST" ]] && echo -e "IPv6链接: vless://${vu}@${IPV6_HOST}:${vp}?type=tcp&security=none&encryption=${venc_uri}#VLESS-ENC-IPv6"
+            if should_print_ipv6_link "$mode" "$VLESS_TAG" "vless_encryption"; then
+                echo -e "IPv6链接: vless://${vu}@${IPV6_HOST}:${vp}?type=tcp&security=none&encryption=${venc_uri}#VLESS-ENC-IPv6"
+            elif [[ "$mode" == "ipv6" ]]; then
+                print_ipv6_status_hint "$VLESS_TAG" "vless_encryption"
+            fi
         fi
     fi
 
@@ -6597,7 +6805,11 @@ view_config() {
         echo -e "用户: ${su}"
         echo -e "密码: ${sw}"
         [[ -n "$IPV4_HOST" ]] && echo -e "IPv4链接: socks5://${su}:${sw}@${IPV4_HOST}:${sp}"
-        [[ -n "$IPV6_HOST" ]] && echo -e "IPv6链接: socks5://${su}:${sw}@${IPV6_HOST}:${sp}"
+        if should_print_ipv6_link "$mode" "$SOCKS_TAG" "socks5"; then
+            echo -e "IPv6链接: socks5://${su}:${sw}@${IPV6_HOST}:${sp}"
+        elif [[ "$mode" == "ipv6" ]]; then
+            print_ipv6_status_hint "$SOCKS_TAG" "socks5"
+        fi
     fi
 
     if [[ "$detail" == "doctor" ]]; then
@@ -6772,20 +6984,29 @@ installed_protocols_summary() {
     printf '%s' "$summary"
 }
 
-uninstall() {
+render_uninstall_menu() {
     echo -e "\n${YELLOW}[卸载] 选择:${PLAIN}"
     echo " 1) 删除 SS2022 配置"
     echo " 2) 删除 VLESS Encryption 配置"
     echo " 3) 删除 VLESS TCP REALITY 配置"
     echo " 4) 删除 VLESS Encryption + XHTTP + FinalMask 配置"
-    echo " 5) 删除 SOCKS5 配置"
-    echo " 6) 卸载全部 Xray"
-    echo " 7) 清理旧 sing-box 残留"
+    echo " 5) 删除 VLESS XHTTP + REALITY 配置"
+    echo " 6) 删除 VLESS Encryption + REALITY 配置"
+    echo " 7) 删除 VLESS Encryption + XHTTP + REALITY + FinalMask 配置"
+    echo " 8) 删除 SOCKS5 配置"
+    echo " 9) 卸载全部 Xray"
+    echo "10) 清理旧 sing-box 残留"
+    echo "11) 返回主菜单"
+}
+
+uninstall() {
+    render_uninstall_menu
     read -r -p "选项: " OPT
 
     case "$OPT" in
         1)
             remove_inbound "$SS_TAG"
+            state_delete_key "ss2022"
             apply_config
             ok "[完成] SS2022 已删除。"
             ;;
@@ -6802,11 +7023,21 @@ uninstall() {
             remove_vless_xhttp_finalmask_config
             ;;
         5)
+            remove_advanced_profile_config "xhttp-reality"
+            ;;
+        6)
+            remove_advanced_profile_config "enc-reality"
+            ;;
+        7)
+            remove_advanced_profile_config "fullstack"
+            ;;
+        8)
             remove_inbound "$SOCKS_TAG"
+            state_delete_key "socks5"
             apply_config
             ok "[完成] SOCKS5 已删除。"
             ;;
-        6)
+        9)
             read -r -p "确认卸载 Xray、配置和快捷命令? [y/N]: " CONFIRM
             [[ "$CONFIRM" =~ ^[yY]$ ]] || return 0
             stop_service
@@ -6819,11 +7050,14 @@ uninstall() {
                 rm -f "/etc/init.d/${SERVICE_NAME}"
             fi
             rm -rf "$CONFIG_DIR" "$ASSET_DIR" "$INSTALLER_DIR" "$BIN_PATH" "$SHORTCUT_PATH" "$LEGACY_SHORTCUT_PATH"
-            ok "[完成] Xray 已彻底卸载。"
+            ok "[完成] Xray 已彻底卸载。当前 shell 如仍缓存 ike 路径，可执行 hash -r。"
             exit 0
             ;;
-        7)
+        10)
             cleanup_legacy_singbox
+            ;;
+        11 | "")
+            return 0
             ;;
         *)
             err "无效选项。"
@@ -6916,17 +7150,19 @@ render_menu() {
     echo -e "${GREEN}4.${PLAIN} 安装 VLESS Encryption"
     echo -e "${GREEN}5.${PLAIN} 安装 VLESS TCP REALITY"
     echo -e "${GREEN}6.${PLAIN} 安装 VLESS Encryption + XHTTP + FinalMask"
-    echo -e "${GREEN}7.${PLAIN} 安装 SOCKS5 代理"
-    echo -e "${GREEN}8.${PLAIN} 查看当前配置链接"
-    echo -e "${GREEN}9.${PLAIN} 设置链接显示模式 (IPv4/IPv6/双栈)"
-    echo -e "${GREEN}10.${PLAIN} 重置密钥/密码（端口不变）"
-    echo -e "${RED}11.${PLAIN} 卸载/清理"
-    echo -e "${GREEN}12.${PLAIN} 开启/关闭中国大陆直连屏蔽"
-    echo -e "${GREEN}13.${PLAIN} 开启/关闭增强安全屏蔽"
-    echo -e "${GREEN}14.${PLAIN} 导出当前配置备份"
-    echo -e "${GREEN}15.${PLAIN} Tunnel 中转管理"
-    echo -e "${GREEN}16.${PLAIN} 高级协议组合"
-    echo -e "${GREEN}17.${PLAIN} 退出"
+    echo -e "${GREEN}7.${PLAIN} 安装 VLESS XHTTP + REALITY（高级）"
+    echo -e "${GREEN}8.${PLAIN} 安装 VLESS Encryption + REALITY（高级）"
+    echo -e "${GREEN}9.${PLAIN} 安装 VLESS Encryption + XHTTP + REALITY + FinalMask（FullStack）"
+    echo -e "${GREEN}10.${PLAIN} 安装 SOCKS5 代理"
+    echo -e "${GREEN}11.${PLAIN} 查看当前配置链接"
+    echo -e "${GREEN}12.${PLAIN} 设置链接显示模式 (IPv4/IPv6/双栈)"
+    echo -e "${GREEN}13.${PLAIN} 重置密钥/密码（端口不变）"
+    echo -e "${RED}14.${PLAIN} 卸载/清理"
+    echo -e "${GREEN}15.${PLAIN} 开启/关闭中国大陆直连屏蔽"
+    echo -e "${GREEN}16.${PLAIN} 开启/关闭增强安全屏蔽"
+    echo -e "${GREEN}17.${PLAIN} 导出当前配置备份"
+    echo -e "${GREEN}18.${PLAIN} Tunnel 中转管理"
+    echo -e "${GREEN}19.${PLAIN} 退出"
     echo -e "----------------------------------------------"
 }
 
@@ -6935,7 +7171,7 @@ show_menu() {
 
     while true; do
         render_menu
-        read -r -p "请输入选项 [1-17]: " MENU_CHOICE || exit 0
+        read -r -p "请输入选项 [1-19]: " MENU_CHOICE || exit 0
 
         case "$MENU_CHOICE" in
             1)
@@ -6955,7 +7191,7 @@ show_menu() {
                             err "[失败] IPv6 + Shadowsocks 2022 安装未完成，请查看上方错误信息。"
                         fi
                     else
-                        info "[IPv6] 请先在服务器开通 IPv6 后重试。"
+                        info "[IPv6] 未检测到可用全局 IPv6 地址，请先在服务器开通 IPv6 后重试。"
                         err "[失败] IPv6 + Shadowsocks 2022 安装未完成。"
                     fi
                 fi
@@ -6976,40 +7212,52 @@ show_menu() {
                 fi
                 ;;
             7)
+                if ! { prepare_system && configure_advanced_profile "xhttp-reality" "interactive" && install_advanced_profile "xhttp-reality"; }; then
+                    err "[失败] VLESS XHTTP + REALITY 安装未完成，请查看上方错误信息。"
+                fi
+                ;;
+            8)
+                if ! { prepare_system && configure_advanced_profile "enc-reality" "interactive" && install_advanced_profile "enc-reality"; }; then
+                    err "[失败] VLESS Encryption + REALITY 安装未完成，请查看上方错误信息。"
+                fi
+                ;;
+            9)
+                if ! { prepare_system && configure_advanced_profile "fullstack" "interactive" && install_advanced_profile "fullstack"; }; then
+                    err "[失败] VLESS Encryption + XHTTP + REALITY + FinalMask 安装未完成，请查看上方错误信息。"
+                fi
+                ;;
+            10)
                 if ! { prepare_system && install_socks5; }; then
                     err "[失败] SOCKS5 安装未完成，请查看上方错误信息。"
                 fi
                 ;;
-            8)
+            11)
                 view_config || err "[失败] 查看当前配置链接失败，请查看上方错误信息。"
                 ;;
-            9)
+            12)
                 set_link_view_mode || err "[失败] 设置链接显示模式失败，请查看上方错误信息。"
                 ;;
-            10)
+            13)
                 if ! { prepare_system && reset_secrets; }; then
                     err "[失败] 重置密钥/密码未完成，请查看上方错误信息。"
                 fi
                 ;;
-            11)
+            14)
                 uninstall || err "[失败] 卸载/清理未完成，请查看上方错误信息。"
                 ;;
-            12)
+            15)
                 configure_china_direct_block || err "[失败] 中国大陆直连屏蔽设置未完成，请查看上方错误信息。"
                 ;;
-            13)
+            16)
                 configure_enhanced_safety_block || err "[失败] 增强安全屏蔽设置未完成，请查看上方错误信息。"
                 ;;
-            14)
+            17)
                 export_current_config_backup || err "[失败] 导出当前配置备份未完成，请查看上方错误信息。"
                 ;;
-            15)
+            18)
                 configure_forward_menu || err "[失败] Tunnel 中转管理未完成，请查看上方错误信息。"
                 ;;
-            16)
-                configure_advanced_profiles_menu || err "[失败] 高级协议组合未完成，请查看上方错误信息。"
-                ;;
-            17) exit 0 ;;
+            19) exit 0 ;;
             *) err "错误选项。" ;;
         esac
 
@@ -7056,6 +7304,7 @@ run_view_command() {
             get_local_addresses
         fi
         host_candidates "$mode"
+        CURRENT_LINK_VIEW_MODE="$mode"
         case "$protocol" in
             reality)
                 print_reality_result "show"
@@ -8215,6 +8464,8 @@ migrate_old_state() {
     local old_reality_flow old_reality_link old_xhttp_enabled old_xhttp_link
     local inferred_reality_flow="" inferred_xhttp_enabled="" inferred_xhttp_finalmask_json="null"
     local old_xhttp_finalmask_json
+    local ss_scope="" vless_scope="" reality_scope="" xhttp_scope="" socks_scope=""
+    local xhttp_reality_scope="" enc_reality_scope="" fullstack_scope=""
 
     if [[ "$dry_run" == "true" ]]; then
         [[ -f "$STATE_FILE" ]] || {
@@ -8230,6 +8481,41 @@ migrate_old_state() {
     old_xhttp_enabled="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_enabled // empty" "$STATE_FILE" 2>/dev/null)"
     old_xhttp_link="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.link // empty" "$STATE_FILE" 2>/dev/null)"
     old_xhttp_finalmask_json="$(jq -c ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_json // empty" "$STATE_FILE" 2>/dev/null)"
+
+    if [[ -f "$CONFIG_FILE" ]]; then
+        if jq -e '.ss2022? and ((.ss2022.listen_scope // "") == "")' "$STATE_FILE" >/dev/null 2>&1; then
+            ss_scope="$(config_inbound_listen_scope "$SS_TAG")"
+            [[ "$ss_scope" == "unknown" ]] && diag_warn "无法从 config 推导 ss2022.listen_scope" || changed="true"
+        fi
+        if jq -e '.vless_encryption? and ((.vless_encryption.listen_scope // "") == "")' "$STATE_FILE" >/dev/null 2>&1; then
+            vless_scope="$(config_inbound_listen_scope "$VLESS_TAG")"
+            [[ "$vless_scope" == "unknown" ]] && diag_warn "无法从 config 推导 vless_encryption.listen_scope" || changed="true"
+        fi
+        if jq -e ".${REALITY_STATE_KEY}? and ((.${REALITY_STATE_KEY}.listen_scope // \"\") == \"\")" "$STATE_FILE" >/dev/null 2>&1; then
+            reality_scope="$(config_inbound_listen_scope "$REALITY_TAG")"
+            [[ "$reality_scope" == "unknown" ]] && diag_warn "无法从 config 推导 vless_reality.listen_scope" || changed="true"
+        fi
+        if jq -e ".${VLESS_XHTTP_FM_STATE_KEY}? and ((.${VLESS_XHTTP_FM_STATE_KEY}.listen_scope // \"\") == \"\")" "$STATE_FILE" >/dev/null 2>&1; then
+            xhttp_scope="$(config_inbound_listen_scope "$VLESS_XHTTP_FM_TAG")"
+            [[ "$xhttp_scope" == "unknown" ]] && diag_warn "无法从 config 推导 vless_xhttp_finalmask.listen_scope" || changed="true"
+        fi
+        if jq -e '.socks5? and ((.socks5.listen_scope // "") == "")' "$STATE_FILE" >/dev/null 2>&1; then
+            socks_scope="$(config_inbound_listen_scope "$SOCKS_TAG")"
+            [[ "$socks_scope" == "unknown" ]] && diag_warn "无法从 config 推导 socks5.listen_scope" || changed="true"
+        fi
+        if jq -e ".${VLESS_XHTTP_REALITY_STATE_KEY}? and ((.${VLESS_XHTTP_REALITY_STATE_KEY}.listen_scope // \"\") == \"\")" "$STATE_FILE" >/dev/null 2>&1; then
+            xhttp_reality_scope="$(config_inbound_listen_scope "$VLESS_XHTTP_REALITY_TAG")"
+            [[ "$xhttp_reality_scope" == "unknown" ]] && diag_warn "无法从 config 推导 vless_xhttp_reality.listen_scope" || changed="true"
+        fi
+        if jq -e ".${VLESS_ENC_REALITY_STATE_KEY}? and ((.${VLESS_ENC_REALITY_STATE_KEY}.listen_scope // \"\") == \"\")" "$STATE_FILE" >/dev/null 2>&1; then
+            enc_reality_scope="$(config_inbound_listen_scope "$VLESS_ENC_REALITY_TAG")"
+            [[ "$enc_reality_scope" == "unknown" ]] && diag_warn "无法从 config 推导 vless_enc_reality.listen_scope" || changed="true"
+        fi
+        if jq -e ".${VLESS_FULLSTACK_STATE_KEY}? and ((.${VLESS_FULLSTACK_STATE_KEY}.listen_scope // \"\") == \"\")" "$STATE_FILE" >/dev/null 2>&1; then
+            fullstack_scope="$(config_inbound_listen_scope "$VLESS_FULLSTACK_TAG")"
+            [[ "$fullstack_scope" == "unknown" ]] && diag_warn "无法从 config 推导 vless_fullstack.listen_scope" || changed="true"
+        fi
+    fi
 
     if jq -e ".${REALITY_STATE_KEY}" "$STATE_FILE" >/dev/null 2>&1; then
         if [[ -z "$old_reality_flow" ]]; then
@@ -8316,7 +8602,23 @@ migrate_old_state() {
         --arg xhttp_link "$xhttp_link" \
         --argjson xhttp_finalmask_json "$inferred_xhttp_finalmask_json" \
         --arg reality_key "$REALITY_STATE_KEY" \
-        --arg xhttp_key "$VLESS_XHTTP_FM_STATE_KEY" '
+        --arg xhttp_key "$VLESS_XHTTP_FM_STATE_KEY" \
+        --arg ss_scope "$ss_scope" \
+        --arg vless_scope "$vless_scope" \
+        --arg reality_scope "$reality_scope" \
+        --arg xhttp_scope "$xhttp_scope" \
+        --arg socks_scope "$socks_scope" \
+        --arg xhttp_reality_scope "$xhttp_reality_scope" \
+        --arg enc_reality_scope "$enc_reality_scope" \
+        --arg fullstack_scope "$fullstack_scope" \
+        --arg xhttp_reality_key "$VLESS_XHTTP_REALITY_STATE_KEY" \
+        --arg enc_reality_key "$VLESS_ENC_REALITY_STATE_KEY" \
+        --arg fullstack_key "$VLESS_FULLSTACK_STATE_KEY" '
+        def fill_scope($key; $scope):
+          if .[$key]? and ((.[$key].listen_scope // "") == "") and $scope != "" and $scope != "unknown"
+          then .[$key].listen_scope = $scope
+          else .
+          end;
         if .[$reality_key]? then
           (if ((.[$reality_key].flow // "") == "" and $reality_flow != "") then .[$reality_key].flow = $reality_flow else . end) |
           (if ($reality_link != "") then .[$reality_key].link = (.[$reality_key].link // $reality_link) else . end)
@@ -8325,7 +8627,15 @@ migrate_old_state() {
           (if ((.[$xhttp_key] | has("finalmask_enabled") | not) and $xhttp_enabled != "") then .[$xhttp_key].finalmask_enabled = ($xhttp_enabled == "true") else . end) |
           (if ((.[$xhttp_key].finalmask_json // null) == null and $xhttp_finalmask_json != null) then .[$xhttp_key].finalmask_json = $xhttp_finalmask_json else . end) |
           (if ($xhttp_link != "") then .[$xhttp_key].link = (.[$xhttp_key].link // $xhttp_link) else . end)
-        else . end
+        else . end |
+        fill_scope("ss2022"; $ss_scope) |
+        fill_scope("vless_encryption"; $vless_scope) |
+        fill_scope($reality_key; $reality_scope) |
+        fill_scope($xhttp_key; $xhttp_scope) |
+        fill_scope("socks5"; $socks_scope) |
+        fill_scope($xhttp_reality_key; $xhttp_reality_scope) |
+        fill_scope($enc_reality_key; $enc_reality_scope) |
+        fill_scope($fullstack_key; $fullstack_scope)
       ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
     rm -f "$tmp"
     ensure_config_security

@@ -143,6 +143,9 @@ cleanup_fixture() {
     ENDPOINT_AUTO_OVERRIDE=""
     ENDPOINT_AUTO_CACHE=""
     TEST_X25519_OUTPUT_MODE=""
+    XRAY_ONECLICK_TEST_GLOBAL_IPV6=""
+    XRAY_ONECLICK_TEST_IPV6_DISABLE_ALL=""
+    XRAY_ONECLICK_TEST_IPV6_DISABLE_DEFAULT=""
 }
 
 setup_fixture() {
@@ -158,6 +161,9 @@ setup_fixture() {
     BIN_PATH="${TEST_TMP}/xray"
     ENDPOINT_AUTO_OVERRIDE="203.0.113.10"
     ENDPOINT_AUTO_CACHE=""
+    XRAY_ONECLICK_TEST_GLOBAL_IPV6=""
+    XRAY_ONECLICK_TEST_IPV6_DISABLE_ALL=""
+    XRAY_ONECLICK_TEST_IPV6_DISABLE_DEFAULT=""
     INIT_SYSTEM="test"
     OS_TYPE="test"
     ARCH="x86_64"
@@ -341,6 +347,17 @@ install_xhttp_fixture() {
     install_vless_xhttp_finalmask >/dev/null || fail "xhttp install failed"
 }
 
+set_inbound_listen() {
+    local tag="$1"
+    local listen="$2"
+    local tmp
+
+    tmp="$(mktemp)"
+    jq --arg tag "$tag" --arg listen "$listen" \
+        '(.inbounds[]? | select(.tag == $tag).listen) = $listen' \
+        "$CONFIG_FILE" >"$tmp" && mv "$tmp" "$CONFIG_FILE"
+}
+
 set_advanced_vars() {
     local kind="$1"
     local finalmask="${2:-true}"
@@ -464,14 +481,25 @@ test_menu_order_text() {
     output="$(render_menu | sed -E 's/\x1B\[[0-9;]*[mK]//g')"
     assert_output_contains "$output" "5. 安装 VLESS TCP REALITY" "menu missing Reality at option 5"
     assert_output_contains "$output" "6. 安装 VLESS Encryption + XHTTP + FinalMask" "menu missing XHTTP at option 6"
-    assert_output_contains "$output" "7. 安装 SOCKS5 代理" "menu missing SOCKS5 at option 7"
-    assert_output_contains "$output" "16. 高级协议组合" "menu missing advanced profiles at option 16"
-    assert_output_contains "$output" "17. 退出" "menu missing exit at option 17"
-    assert_output_not_contains "$output" "14. 安装 VLESS TCP REALITY" "menu still has Reality at option 14"
-    assert_output_not_contains "$output" "15. 安装 VLESS Encryption + XHTTP + FinalMask" "menu still has XHTTP at option 15"
-    assert_output_not_contains "$output" "16. 退出" "menu still exits at option 16"
+    assert_output_contains "$output" "7. 安装 VLESS XHTTP + REALITY（高级）" "menu missing xhttp-reality at option 7"
+    assert_output_contains "$output" "8. 安装 VLESS Encryption + REALITY（高级）" "menu missing enc-reality at option 8"
+    assert_output_contains "$output" "9. 安装 VLESS Encryption + XHTTP + REALITY + FinalMask（FullStack）" "menu missing fullstack at option 9"
+    assert_output_contains "$output" "10. 安装 SOCKS5 代理" "menu missing SOCKS5 at option 10"
+    assert_output_contains "$output" "19. 退出" "menu missing exit at option 19"
+    assert_output_not_contains "$output" "16. 高级协议组合" "menu still hides advanced profiles at option 16"
+    assert_output_not_contains "$output" "17. 退出" "menu still exits at option 17"
 }
 
+test_uninstall_menu_order_text() {
+    local output
+
+    output="$(render_uninstall_menu | sed -E 's/\x1B\[[0-9;]*[mK]//g')"
+    assert_output_contains "$output" "5) 删除 VLESS XHTTP + REALITY 配置" "uninstall menu missing xhttp-reality"
+    assert_output_contains "$output" "6) 删除 VLESS Encryption + REALITY 配置" "uninstall menu missing enc-reality"
+    assert_output_contains "$output" "7) 删除 VLESS Encryption + XHTTP + REALITY + FinalMask 配置" "uninstall menu missing fullstack"
+    assert_output_contains "$output" "9) 卸载全部 Xray" "uninstall all should be option 9"
+    assert_output_contains "$output" "11) 返回主菜单" "return should be option 11"
+}
 test_reality_jq_write() {
     setup_fixture
     install_reality_fixture
@@ -570,6 +598,60 @@ test_view_outputs_new_and_old_links() {
     output="$(run_view_command xhttp 2>&1)"
     assert_output_contains "$output" "vless://" "ike view xhttp did not show link"
     assert_output_contains "$output" "type=xhttp" "ike view xhttp did not show xhttp link"
+    cleanup_fixture
+}
+
+test_ipv6_link_scope_consistency() {
+    local output tmp
+
+    setup_fixture
+    XRAY_ONECLICK_TEST_GLOBAL_IPV6="2407:cdc0:b027::274"
+    output="$(view_config dual quick)"
+    assert_output_not_contains "$output" "SS2022-IPv6" "IPv4-only SS2022 should not print IPv6 link"
+    assert_output_not_contains "$output" "socks5://admin:socks-pass@[" "IPv4-only SOCKS5 should not print IPv6 link"
+
+    set_inbound_listen "$SS_TAG" "::"
+    output="$(view_config dual quick)"
+    assert_output_contains "$output" "SS2022-IPv6" "SS2022 listening on :: should print IPv6 link"
+
+    set_inbound_listen "$SOCKS_TAG" "::"
+    output="$(view_config dual quick)"
+    assert_output_contains "$output" "socks5://admin:socks-pass@[" "SOCKS5 listening on :: should print IPv6 link"
+
+    tmp="$(mktemp)"
+    jq '.ss2022 = {"port":10001,"listen_scope":"ipv4"}' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
+    output="$(render_export_clients)"
+    assert_output_not_contains "$output" "SS2022-IPv6" "state listen_scope=ipv4 should suppress SS2022 IPv6 export"
+
+    output="$(view_config ipv6 quick)"
+    assert_output_contains "$output" "当前协议未监听 IPv6" "ipv6-only view should explain unsupported protocol"
+
+    XRAY_ONECLICK_TEST_GLOBAL_IPV6=""
+    XRAY_ONECLICK_TEST_IPV6_DISABLE_ALL="1"
+    XRAY_ONECLICK_TEST_IPV6_DISABLE_DEFAULT="1"
+    if output="$(check_ipv6_status 2>&1)"; then
+        fail "IPv6 check should fail without global IPv6"
+    fi
+    assert_output_contains "$output" "未检测到全局 IPv6 地址" "IPv6 failure should mention missing global address"
+
+    XRAY_ONECLICK_TEST_GLOBAL_IPV6="2407:cdc0:b027::274"
+    info() { printf '%s\n' "$*"; }
+    ok() { printf '%s\n' "$*"; }
+    output="$(check_ipv6_status 2>&1)" || fail "IPv6 check should continue when global IPv6 exists"
+    info() { :; }
+    ok() { :; }
+    assert_output_contains "$output" "disable_ipv6=1" "IPv6 check should warn when sysctl is disabled but address exists"
+    cleanup_fixture
+}
+
+test_migrate_infers_listen_scope() {
+    local tmp
+
+    setup_fixture
+    tmp="$(mktemp)"
+    jq '.ss2022 = {"port":10001}' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
+    migrate_old_state false >/dev/null || fail "migrate_old_state failed"
+    assert_jq "$STATE_FILE" '.ss2022.listen_scope == "ipv4"' "migrate did not infer SS2022 listen_scope"
     cleanup_fixture
 }
 
@@ -951,7 +1033,7 @@ test_advanced_uninstalled_show_doctor_smoke_are_friendly() {
 test_readme_final_user_doc_guard() {
     local output
 
-    if output="$(grep -E 'scripts/test\.sh|tests/|shellcheck|shfmt|mock|单元测试|测试覆盖|开发测试' "${ROOT_DIR}/README.md" 2>&1)"; then
+    if output="$(grep -E 'scripts/test\.sh|tests/|shellcheck|shfmt|mock|单元测试|测试覆盖|开发测试|CI|alpha|beta' "${ROOT_DIR}/README.md" 2>&1)"; then
         fail "README contains development test content: $output"
     fi
 }
@@ -968,11 +1050,14 @@ run_test test_x25519_parser_formats
 run_test test_reality_generate_keys_new_xray_format
 run_test test_reality_generate_keys_failure_is_redacted
 run_test test_menu_order_text
+run_test test_uninstall_menu_order_text
 run_test test_reality_jq_write
 run_test test_reality_random_port
 run_test test_xhttp_finalmask_write
 run_test test_xhttp_path_validation
 run_test test_view_outputs_new_and_old_links
+run_test test_ipv6_link_scope_consistency
+run_test test_migrate_infers_listen_scope
 run_test test_remove_reality_and_xhttp_are_scoped
 run_test test_repeat_install_does_not_duplicate
 run_test test_uninstalled_show_remove_are_friendly

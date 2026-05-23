@@ -1,16 +1,16 @@
 # Xray-OneClick
 
-**Xray-OneClick 1.1.1**
+**Xray-OneClick 1.1.2**
 
 Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在 Debian / Ubuntu systemd 服务器上快速安装和维护个人 Xray 节点。
 
 脚本支持 Shadowsocks 2022、VLESS Encryption、VLESS TCP REALITY、VLESS Encryption + XHTTP + FinalMask、SOCKS5、Tunnel 中转管理，以及高级协议组合。默认带基础安全屏蔽、配置备份、服务诊断、配置导出、Xray-core 升级和安全卸载能力。
 
-当前版本：`1.1.1`
+当前版本：`1.1.2`
 
 状态：正式版
 
-说明：1.1.1 收敛高级协议组合的输出、诊断、删除边界和文档推荐顺序。普通用户仍建议优先使用 VLESS TCP REALITY；高级组合需要较新的 Xray-core 和较新的客户端核心。
+说明：1.1.2 将高级协议组合直接放入主菜单，并统一 IPv6 endpoint、监听范围和链接输出判断。普通用户仍建议优先使用 VLESS TCP REALITY；高级组合需要较新的 Xray-core 和较新的客户端核心。
 
 ## 功能特性
 
@@ -117,17 +117,19 @@ ike xray upgrade --restart
 4. 安装 VLESS Encryption
 5. 安装 VLESS TCP REALITY
 6. 安装 VLESS Encryption + XHTTP + FinalMask
-7. 安装 SOCKS5 代理
-8. 查看当前配置链接
-9. 设置链接显示模式 (IPv4/IPv6/双栈)
-10. 重置密钥/密码（端口不变）
-11. 卸载/清理
-12. 开启/关闭中国大陆直连屏蔽
-13. 开启/关闭增强安全屏蔽
-14. 导出当前配置备份
-15. Tunnel 中转管理
-16. 高级协议组合
-17. 退出
+7. 安装 VLESS XHTTP + REALITY（高级）
+8. 安装 VLESS Encryption + REALITY（高级）
+9. 安装 VLESS Encryption + XHTTP + REALITY + FinalMask（FullStack）
+10. 安装 SOCKS5 代理
+11. 查看当前配置链接
+12. 设置链接显示模式 (IPv4/IPv6/双栈)
+13. 重置密钥/密码（端口不变）
+14. 卸载/清理
+15. 开启/关闭中国大陆直连屏蔽
+16. 开启/关闭增强安全屏蔽
+17. 导出当前配置备份
+18. Tunnel 中转管理
+19. 退出
 ```
 
 ## 常用命令
@@ -177,7 +179,9 @@ ike smoke fullstack --restart
 - `2022-blake3-aes-256-gcm`
 - `2022-blake3-chacha20-poly1305`
 
-IPv6 版本可使用菜单第 3 项。服务器没有全局 IPv6 时该项会失败，这是正常保护行为。
+菜单第 2 项安装普通 SS2022，默认按 IPv4 入站监听；菜单第 3 项安装 IPv6 + SS2022，需要服务器存在可用的全局 IPv6 地址。脚本只会在协议实际监听 IPv6/双栈，并且系统检测到全局 IPv6 地址时输出 IPv6 链接。普通 IPv4-only 入站不会因为服务器有 IPv6 地址而强行输出 IPv6 链接。
+
+如果 `sysctl` 显示 `disable_ipv6=1`，但脚本通过网卡检测到了全局 IPv6 地址，会给出 warning 并按实际地址继续；如果没有全局 IPv6 地址，则 IPv6 + SS2022 会拒绝安装。
 
 ## VLESS Encryption
 
@@ -282,10 +286,12 @@ ike smoke xhttp
 
 ## 高级协议组合
 
-高级协议组合统一放在主菜单第 16 项：
+高级协议组合已直接放在主菜单第 7、8、9 项：
 
 ```text
-16. 高级协议组合
+7. 安装 VLESS XHTTP + REALITY（高级）
+8. 安装 VLESS Encryption + REALITY（高级）
+9. 安装 VLESS Encryption + XHTTP + REALITY + FinalMask（FullStack）
 ```
 
 高级组合适合已经确认普通节点可用、并且想测试更前沿组合的用户。普通用户建议优先使用普通 Reality。高级组合不使用 TLS 证书，默认都是 `security=reality`，不是 `security=tls`。
@@ -392,10 +398,10 @@ ike fullstack install --finalmask off
 通过菜单安装：
 
 ```text
-7. 安装 SOCKS5 代理
+10. 安装 SOCKS5 代理
 ```
 
-SOCKS5 适合临时代理或内网调试。安装后可通过 `ike view` 查看连接参数。
+SOCKS5 适合临时代理或内网调试。安装后可通过 `ike view` 查看连接参数。脚本只会在 SOCKS5 入站实际监听 IPv6/双栈时输出 IPv6 链接；默认 IPv4-only 监听不会输出不可用的 IPv6 链接。
 
 ## Tunnel 中转管理
 
@@ -588,6 +594,22 @@ ike migrate
 同协议重复部署会覆盖同 tag 配置，不同协议互不影响。写入配置前脚本会自动备份，配置应用失败时会尝试回滚。
 
 ## 卸载与清理
+
+主菜单第 14 项进入卸载/清理菜单：
+
+```text
+1. 删除 SS2022 配置
+2. 删除 VLESS Encryption 配置
+3. 删除 VLESS TCP REALITY 配置
+4. 删除 VLESS Encryption + XHTTP + FinalMask 配置
+5. 删除 VLESS XHTTP + REALITY 配置
+6. 删除 VLESS Encryption + REALITY 配置
+7. 删除 VLESS Encryption + XHTTP + REALITY + FinalMask 配置
+8. 删除 SOCKS5 配置
+9. 卸载全部 Xray
+10. 清理旧 sing-box 残留
+11. 返回主菜单
+```
 
 保留配置卸载：
 
