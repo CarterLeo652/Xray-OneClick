@@ -95,6 +95,16 @@ assert_jq() {
     fi
 }
 
+assert_json() {
+    local json="$1"
+    local expr="$2"
+    local message="$3"
+
+    if ! jq -e "$expr" <<<"$json" >/dev/null; then
+        fail "$message"
+    fi
+}
+
 assert_output_contains() {
     local output="$1"
     local needle="$2"
@@ -340,11 +350,46 @@ set_xhttp_vars() {
     VLESS_ENC_METHOD="native"
     VLESS_CLIENT_RTT="0rtt"
     VLESS_SERVER_TICKET="600s"
+    reset_finalmask_request_vars
 }
 
 install_xhttp_fixture() {
     set_xhttp_vars "${1:-true}"
     install_vless_xhttp_finalmask >/dev/null || fail "xhttp install failed"
+}
+
+reset_finalmask_request_vars() {
+    FINALMASK_PRESET_REQUEST=""
+    FINALMASK_JSON_REQUEST=""
+    FINALMASK_PACKETS_REQUEST=""
+    FINALMASK_LENGTH_REQUEST=""
+    FINALMASK_DELAY_REQUEST=""
+    FINALMASK_MAX_SPLIT_REQUEST=""
+    FINALMASK_MODE=""
+    FINALMASK_PRESET=""
+    FINALMASK_SUMMARY=""
+    XHTTP_FINALMASK_MODE=""
+    XHTTP_FINALMASK_PRESET=""
+    XHTTP_FINALMASK_SUMMARY=""
+    ADVANCED_FINALMASK_MODE=""
+    ADVANCED_FINALMASK_PRESET=""
+    ADVANCED_FINALMASK_SUMMARY=""
+}
+
+apply_xhttp_finalmask_from_requests() {
+    XHTTP_FINALMASK_JSON="$(build_finalmask_json)" || fail "failed to build xhttp finalmask json"
+    set_finalmask_metadata_from_requests "$XHTTP_FINALMASK_JSON"
+    XHTTP_FINALMASK_MODE="$FINALMASK_MODE"
+    XHTTP_FINALMASK_PRESET="$FINALMASK_PRESET"
+    XHTTP_FINALMASK_SUMMARY="$FINALMASK_SUMMARY"
+}
+
+apply_advanced_finalmask_from_requests() {
+    ADVANCED_FINALMASK_JSON="$(build_finalmask_json)" || fail "failed to build advanced finalmask json"
+    set_finalmask_metadata_from_requests "$ADVANCED_FINALMASK_JSON"
+    ADVANCED_FINALMASK_MODE="$FINALMASK_MODE"
+    ADVANCED_FINALMASK_PRESET="$FINALMASK_PRESET"
+    ADVANCED_FINALMASK_SUMMARY="$FINALMASK_SUMMARY"
 }
 
 set_inbound_listen() {
@@ -394,6 +439,7 @@ set_advanced_vars() {
     VLESS_ENC_METHOD="native"
     VLESS_CLIENT_RTT="0rtt"
     VLESS_SERVER_TICKET="600s"
+    reset_finalmask_request_vars
 }
 
 install_advanced_fixture() {
@@ -549,6 +595,111 @@ test_xhttp_finalmask_write() {
     fm="${link#*fm=}"
     fm="${fm%%#*}"
     [[ "$fm" != *"{"* && "$fm" != *"}"* && "$fm" != *" "* && "$fm" != *"\""* ]] || fail "fm contains raw JSON characters"
+    cleanup_fixture
+}
+
+test_finalmask_presets_custom_and_raw_json() {
+    local json output
+
+    reset_finalmask_request_vars
+    json="$(build_finalmask_preset_json conservative)"
+    assert_json "$json" '.tcp[0].settings.length == "120-240" and .tcp[0].settings.delay == "5-10" and .tcp[0].settings.maxSplit == "2-4"' "conservative preset json mismatch"
+    json="$(build_finalmask_preset_json balanced)"
+    assert_json "$json" '.tcp[0].settings.length == "100-200" and .tcp[0].settings.delay == "10-20" and .tcp[0].settings.maxSplit == "3-6"' "balanced preset json mismatch"
+    [[ "$(canonical_json "$json")" == "$(canonical_json "$(default_finalmask_json)")" ]] || fail "default finalmask is not balanced"
+    json="$(build_finalmask_preset_json aggressive)"
+    assert_json "$json" '.tcp[0].settings.length == "80-160" and .tcp[0].settings.delay == "10-30" and .tcp[0].settings.maxSplit == "4-8"' "aggressive preset json mismatch"
+
+    json="$(build_finalmask_custom_json tlshello 80-160 10-30 4-8)"
+    assert_json "$json" '.tcp[0].settings.packets == "tlshello" and .tcp[0].settings.length == "80-160" and .tcp[0].settings.delay == "10-30" and .tcp[0].settings.maxSplit == "4-8"' "custom finalmask json mismatch"
+
+    if build_finalmask_custom_json bad 100-200 10-20 3-6 >/dev/null 2>&1; then fail "invalid packets accepted"; fi
+    if build_finalmask_custom_json tlshello 200-100 10-20 3-6 >/dev/null 2>&1; then fail "invalid length range accepted"; fi
+    if build_finalmask_custom_json tlshello 100-200 20-10 3-6 >/dev/null 2>&1; then fail "invalid delay range accepted"; fi
+    if build_finalmask_custom_json tlshello 100-200 10-20 21 >/dev/null 2>&1; then fail "invalid maxSplit accepted"; fi
+    if validate_finalmask_json '{"tcp":{}}'; then fail "invalid raw finalmask structure accepted"; fi
+
+    reset_finalmask_request_vars
+    FINALMASK_JSON_REQUEST='{"tcp":[{"type":"fragment","settings":{"packets":"tlshello","length":"77-88","delay":"1-2","maxSplit":"2-3"}}]}'
+    json="$(build_finalmask_json)" || fail "raw finalmask json rejected"
+    set_finalmask_metadata_from_requests "$json"
+    [[ "$FINALMASK_MODE" == "raw-json" && "$FINALMASK_PRESET" == "raw-json" ]] || fail "raw json metadata mismatch"
+    assert_json "$json" '.tcp[0].settings.length == "77-88"' "raw finalmask json mismatch"
+
+    reset_finalmask_request_vars
+    FINALMASK_PRESET_REQUEST="balanced"
+    FINALMASK_LENGTH_REQUEST="80-160"
+    if output="$(build_finalmask_json 2>&1)"; then
+        fail "preset and custom finalmask options should conflict"
+    fi
+    assert_output_contains "$output" "--finalmask-preset" "finalmask conflict error missing"
+}
+
+test_xhttp_finalmask_modes_and_state() {
+    local output
+
+    setup_fixture
+    set_xhttp_vars "true"
+    reset_finalmask_request_vars
+    FINALMASK_PRESET_REQUEST="conservative"
+    apply_xhttp_finalmask_from_requests
+    install_vless_xhttp_finalmask >/dev/null || fail "xhttp conservative install failed"
+    assert_jq "$CONFIG_FILE" '(.inbounds[]? | select(.tag == "vless-enc-xhttp-finalmask-in").streamSettings.finalmask.tcp[0].settings.length) == "120-240"' "xhttp conservative finalmask not written"
+    assert_jq "$STATE_FILE" '.vless_xhttp_finalmask.finalmask_mode == "preset" and .vless_xhttp_finalmask.finalmask_preset == "conservative" and (.vless_xhttp_finalmask.finalmask_summary | contains("length=120-240"))' "xhttp conservative state metadata missing"
+
+    set_xhttp_vars "true"
+    reset_finalmask_request_vars
+    FINALMASK_PRESET_REQUEST="aggressive"
+    apply_xhttp_finalmask_from_requests
+    install_vless_xhttp_finalmask >/dev/null || fail "xhttp aggressive install failed"
+    assert_jq "$STATE_FILE" '.vless_xhttp_finalmask.finalmask_preset == "aggressive" and (.vless_xhttp_finalmask.finalmask_summary | contains("maxSplit=4-8"))' "xhttp aggressive state metadata missing"
+
+    set_xhttp_vars "true"
+    reset_finalmask_request_vars
+    FINALMASK_LENGTH_REQUEST="80-160"
+    FINALMASK_DELAY_REQUEST="10-30"
+    FINALMASK_MAX_SPLIT_REQUEST="4-8"
+    apply_xhttp_finalmask_from_requests
+    install_vless_xhttp_finalmask >/dev/null || fail "xhttp custom install failed"
+    assert_jq "$STATE_FILE" '.vless_xhttp_finalmask.finalmask_mode == "custom" and .vless_xhttp_finalmask.finalmask_preset == "custom" and (.vless_xhttp_finalmask.finalmask_summary | contains("length=80-160"))' "xhttp custom state metadata missing"
+
+    set_xhttp_vars "true"
+    reset_finalmask_request_vars
+    FINALMASK_JSON_REQUEST='{"tcp":[{"type":"fragment","settings":{"packets":"tlshello","length":"77-88","delay":"1-2","maxSplit":"2-3"}}]}'
+    apply_xhttp_finalmask_from_requests
+    install_vless_xhttp_finalmask >/dev/null || fail "xhttp raw-json install failed"
+    assert_jq "$STATE_FILE" '.vless_xhttp_finalmask.finalmask_mode == "raw-json" and .vless_xhttp_finalmask.finalmask_preset == "raw-json" and (.vless_xhttp_finalmask.link | contains("fm="))' "xhttp raw-json state/link missing"
+    output="$(print_vless_xhttp_finalmask_result "show" 2>&1)"
+    assert_output_contains "$output" "FinalMask 模式: raw-json" "xhttp show missing raw-json mode"
+    assert_output_contains "$output" "FinalMask 摘要:" "xhttp show missing finalmask summary"
+    cleanup_fixture
+}
+
+test_fullstack_finalmask_modes_and_state() {
+    setup_fixture
+    set_advanced_vars "fullstack" "true"
+    reset_finalmask_request_vars
+    FINALMASK_PRESET_REQUEST="balanced"
+    apply_advanced_finalmask_from_requests
+    install_advanced_profile "fullstack" >/dev/null || fail "fullstack balanced install failed"
+    assert_jq "$STATE_FILE" '.vless_fullstack.finalmask_mode == "preset" and .vless_fullstack.finalmask_preset == "balanced" and (.vless_fullstack.link | contains("fm="))' "fullstack balanced metadata missing"
+
+    set_advanced_vars "fullstack" "true"
+    reset_finalmask_request_vars
+    FINALMASK_LENGTH_REQUEST="80-160"
+    FINALMASK_DELAY_REQUEST="10-30"
+    FINALMASK_MAX_SPLIT_REQUEST="4-8"
+    apply_advanced_finalmask_from_requests
+    install_advanced_profile "fullstack" >/dev/null || fail "fullstack custom install failed"
+    assert_jq "$STATE_FILE" '.vless_fullstack.finalmask_mode == "custom" and .vless_fullstack.finalmask_preset == "custom" and (.vless_fullstack.finalmask_summary | contains("maxSplit=4-8"))' "fullstack custom metadata missing"
+
+    set_advanced_vars "fullstack" "true"
+    reset_finalmask_request_vars
+    FINALMASK_JSON_REQUEST='{"tcp":[{"type":"fragment","settings":{"packets":"tlshello","length":"77-88","delay":"1-2","maxSplit":"2-3"}}]}'
+    apply_advanced_finalmask_from_requests
+    install_advanced_profile "fullstack" >/dev/null || fail "fullstack raw-json install failed"
+    assert_jq "$CONFIG_FILE" '(.inbounds[]? | select(.tag == "vless+enc+xhttp+reality+finalmask").streamSettings.finalmask.tcp[0].settings.length) == "77-88"' "fullstack raw-json not written"
+    assert_jq "$STATE_FILE" '.vless_fullstack.finalmask_mode == "raw-json" and .vless_fullstack.finalmask_preset == "raw-json"' "fullstack raw-json metadata missing"
     cleanup_fixture
 }
 
@@ -1054,6 +1205,9 @@ run_test test_uninstall_menu_order_text
 run_test test_reality_jq_write
 run_test test_reality_random_port
 run_test test_xhttp_finalmask_write
+run_test test_finalmask_presets_custom_and_raw_json
+run_test test_xhttp_finalmask_modes_and_state
+run_test test_fullstack_finalmask_modes_and_state
 run_test test_xhttp_path_validation
 run_test test_view_outputs_new_and_old_links
 run_test test_ipv6_link_scope_consistency

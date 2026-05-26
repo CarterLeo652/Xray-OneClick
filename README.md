@@ -1,16 +1,16 @@
 # Xray-OneClick
 
-**Xray-OneClick 1.1.2**
+**Xray-OneClick 1.1.3**
 
 Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在 Debian / Ubuntu systemd 服务器上快速安装和维护个人 Xray 节点。
 
 脚本支持 Shadowsocks 2022、VLESS Encryption、VLESS TCP REALITY、VLESS Encryption + XHTTP + FinalMask、SOCKS5、Tunnel 中转管理，以及高级协议组合。默认带基础安全屏蔽、配置备份、服务诊断、配置导出、Xray-core 升级和安全卸载能力。
 
-当前版本：`1.1.2`
+当前版本：`1.1.3`
 
 状态：正式版
 
-说明：1.1.2 将高级协议组合直接放入主菜单，并统一 IPv6 endpoint、监听范围和链接输出判断。普通用户仍建议优先使用 VLESS TCP REALITY；高级组合需要较新的 Xray-core 和较新的客户端核心。
+说明：1.1.3 增强 FinalMask 参数配置能力，支持 conservative / balanced / aggressive 预设、自定义参数和原始 JSON。普通用户仍建议优先使用 VLESS TCP REALITY；高级组合和 FinalMask 需要较新的 Xray-core 与客户端核心。
 
 ## 功能特性
 
@@ -258,6 +258,8 @@ ike smoke reality
 ike xhttp install
 ike xhttp install --port 30005 --path /api/demo --finalmask off
 ike xhttp install --port 30005 --path /api/demo --finalmask on
+ike xhttp install --finalmask on --finalmask-preset balanced
+ike xhttp install --finalmask on --fm-packets tlshello --fm-length 80-160 --fm-delay 10-30 --fm-max-split 4-8
 ike xhttp show
 ike xhttp remove
 ```
@@ -270,6 +272,7 @@ ike xhttp remove
 - 用户指定 path 必须以 `/` 开头
 - path 不允许空格、`?`、`#` 或反斜杠
 - FinalMask 可通过 `--finalmask on/off` 控制
+- FinalMask 默认使用 `balanced` 模板，也可以选择预设、自定义参数或粘贴完整 JSON
 
 FinalMask 属于高级兼容功能。开启后分享链接会包含 URL 编码后的 `fm=` 参数，链接可能较长；部分客户端可能需要手动填写 path、encryption、finalmask 参数。如果服务端配置应用失败或客户端导入异常，请优先使用：
 
@@ -283,6 +286,44 @@ ike xhttp install --finalmask off
 ike doctor xhttp
 ike smoke xhttp
 ```
+
+## FinalMask 参数
+
+FinalMask 是高级兼容功能，客户端支持情况取决于客户端核心。参数越激进不一定越好；如果连接变慢、不稳定或客户端无法导入，优先切换到 `conservative`，或者直接使用 `--finalmask off`。
+
+默认模板是 `balanced`：
+
+| 预设 | 定位 | length | delay | maxSplit |
+| --- | --- | --- | --- | --- |
+| `conservative` | 保守，更稳，分片较轻 | `120-240` | `5-10` | `2-4` |
+| `balanced` | 均衡，默认推荐 | `100-200` | `10-20` | `3-6` |
+| `aggressive` | 激进，混淆更强，可能影响速度和兼容性 | `80-160` | `10-30` | `4-8` |
+
+参数含义：
+
+- `packets`：目标包类型，目前建议保持 `tlshello`
+- `length`：分片长度范围
+- `delay`：分片间延迟，单位 ms
+- `maxSplit`：最大拆分片数范围
+
+常用命令：
+
+```bash
+ike xhttp install --finalmask on --finalmask-preset balanced
+ike xhttp install --finalmask on --finalmask-preset conservative
+ike xhttp install --finalmask on --finalmask-preset aggressive
+ike xhttp install --finalmask on --fm-packets tlshello --fm-length 80-160 --fm-delay 10-30 --fm-max-split 4-8
+ike fullstack install --finalmask on --finalmask-preset balanced
+ike fullstack install --finalmask off
+```
+
+高级用户可以直接传入完整 JSON：
+
+```bash
+ike xhttp install --finalmask on --finalmask-json '{"tcp":[{"type":"fragment","settings":{"packets":"tlshello","length":"100-200","delay":"10-20","maxSplit":"3-6"}}]}'
+```
+
+`--finalmask-json` 优先级最高；如果同时使用 `--finalmask-preset` 和 `--fm-*` 自定义参数，脚本会拒绝执行，避免写入含糊配置。
 
 ## 高级协议组合
 
@@ -367,6 +408,7 @@ ike enc-reality remove
 ```bash
 ike fullstack install
 ike fullstack install --port 30008 --path /api/test --sni www.abmindustriesgroup.com --finalmask on
+ike fullstack install --port 30008 --path /api/test --sni www.abmindustriesgroup.com --finalmask on --finalmask-preset balanced
 ike fullstack install --port 30008 --path /api/test --sni www.abmindustriesgroup.com --finalmask off
 ike fullstack show
 ike doctor fullstack

@@ -19,7 +19,7 @@ LEGACY_SHORTCUT_PATH="/usr/local/bin/sb"
 INSTALLER_DIR="/usr/local/share/ike"
 INSTALLER_PATH="${INSTALLER_DIR}/install.sh"
 SCRIPT_NAME="Xray-OneClick"
-SCRIPT_VERSION="1.1.2"
+SCRIPT_VERSION="1.1.3"
 REPO_URL="https://github.com/ike-sh/Xray-OneClick"
 RAW_SCRIPT_URL="https://raw.githubusercontent.com/ike-sh/Xray-OneClick/main/install.sh"
 XRAY_RELEASE_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
@@ -2546,20 +2546,374 @@ validate_xhttp_path() {
     [[ ${#path} -ge 2 && ${#path} -le 128 ]] || return 1
 }
 
+finalmask_template_name_to_label() {
+    case "${1:-balanced}" in
+        conservative) printf '%s' "保守 conservative" ;;
+        balanced | default) printf '%s' "均衡 balanced" ;;
+        aggressive) printf '%s' "激进 aggressive" ;;
+        custom) printf '%s' "自定义 custom" ;;
+        raw-json) printf '%s' "原始 JSON raw-json" ;;
+        none | off) printf '%s' "未启用" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+build_finalmask_preset_json() {
+    local preset="${1:-balanced}"
+    local length delay max_split
+
+    case "$preset" in
+        default) preset="balanced" ;;
+    esac
+    case "$preset" in
+        conservative)
+            length="120-240"
+            delay="5-10"
+            max_split="2-4"
+            ;;
+        balanced)
+            length="100-200"
+            delay="10-20"
+            max_split="3-6"
+            ;;
+        aggressive)
+            length="80-160"
+            delay="10-30"
+            max_split="4-8"
+            ;;
+        *)
+            err "[FinalMask] 未知预设: $preset"
+            return 1
+            ;;
+    esac
+    build_finalmask_custom_json "tlshello" "$length" "$delay" "$max_split"
+}
+
 default_finalmask_json() {
-    jq -cn '{
+    build_finalmask_preset_json "balanced"
+}
+
+validate_finalmask_packets() {
+    [[ "${1:-}" == "tlshello" ]]
+}
+
+validate_finalmask_range() {
+    local value="$1"
+    local min="$2"
+    local max="$3"
+    local start end
+
+    [[ "$value" =~ ^[0-9]+(-[0-9]+)?$ ]] || return 1
+    if [[ "$value" == *-* ]]; then
+        start="${value%-*}"
+        end="${value#*-}"
+    else
+        start="$value"
+        end="$value"
+    fi
+    ((start <= end)) || return 1
+    ((start >= min && end <= max))
+}
+
+build_finalmask_custom_json() {
+    local packets="${1:-tlshello}"
+    local length="${2:-100-200}"
+    local delay="${3:-10-20}"
+    local max_split="${4:-3-6}"
+
+    validate_finalmask_packets "$packets" || {
+        err "[FinalMask] packets 目前仅支持 tlshello。"
+        return 1
+    }
+    validate_finalmask_range "$length" 1 1500 || {
+        err "[FinalMask] length 必须是 1-1500 内的整数或 A-B 范围。"
+        return 1
+    }
+    validate_finalmask_range "$delay" 0 1000 || {
+        err "[FinalMask] delay 必须是 0-1000 内的整数或 A-B 范围。"
+        return 1
+    }
+    validate_finalmask_range "$max_split" 1 20 || {
+        err "[FinalMask] maxSplit 必须是 1-20 内的整数或 A-B 范围。"
+        return 1
+    }
+    jq -cn --arg packets "$packets" --arg length "$length" --arg delay "$delay" --arg max_split "$max_split" '{
       tcp: [
         {
           type: "fragment",
           settings: {
-            packets: "tlshello",
-            length: "100-200",
-            delay: "10-20",
-            maxSplit: "3-6"
+            packets: $packets,
+            length: $length,
+            delay: $delay,
+            maxSplit: $max_split
           }
         }
       ]
     }'
+}
+
+validate_finalmask_json() {
+    local json="$1"
+
+    [[ -n "$json" ]] || return 1
+    jq -e 'type == "object" and ((has("tcp") | not) or (.tcp | type == "array"))' >/dev/null 2>&1 <<<"$json"
+}
+
+canonical_json() {
+    jq -cS . 2>/dev/null <<<"$1"
+}
+
+finalmask_summary_from_json() {
+    local json="$1"
+    local summary
+
+    summary="$(jq -r '
+      if (.tcp? | type) == "array" and (.tcp[0]? // null) != null then
+        (.tcp[0] | "fragment \(.settings.packets // "unknown") length=\(.settings.length // "unknown") delay=\(.settings.delay // "unknown") maxSplit=\(.settings.maxSplit // "unknown")")
+      else
+        "custom/raw-json"
+      end
+    ' 2>/dev/null <<<"$json")"
+    printf '%s' "${summary:-custom/raw-json}"
+}
+
+detect_finalmask_preset() {
+    local json="$1"
+    local canon preset preset_json
+
+    canon="$(canonical_json "$json" || true)"
+    for preset in conservative balanced aggressive; do
+        preset_json="$(build_finalmask_preset_json "$preset" 2>/dev/null || true)"
+        if [[ -n "$canon" && "$canon" == "$(canonical_json "$preset_json" || true)" ]]; then
+            printf '%s' "$preset"
+            return 0
+        fi
+    done
+    return 1
+}
+
+set_finalmask_metadata_from_json() {
+    local json="$1"
+    local mode_hint="${2:-auto}"
+    local preset_hint="${3:-}"
+    local detected
+
+    FINALMASK_SUMMARY="$(finalmask_summary_from_json "$json")"
+    if [[ "$mode_hint" == "preset" ]]; then
+        FINALMASK_MODE="preset"
+        FINALMASK_PRESET="${preset_hint:-balanced}"
+    elif [[ "$mode_hint" == "custom" ]]; then
+        FINALMASK_MODE="custom"
+        FINALMASK_PRESET="custom"
+    elif [[ "$mode_hint" == "raw-json" ]]; then
+        FINALMASK_MODE="raw-json"
+        FINALMASK_PRESET="raw-json"
+    elif detected="$(detect_finalmask_preset "$json" 2>/dev/null)"; then
+        FINALMASK_MODE="preset"
+        FINALMASK_PRESET="$detected"
+    else
+        FINALMASK_MODE="raw-json"
+        FINALMASK_PRESET="raw-json"
+    fi
+}
+
+set_finalmask_metadata_from_requests() {
+    local json="$1"
+    local preset
+
+    if [[ -n "${FINALMASK_JSON_REQUEST:-}" ]]; then
+        set_finalmask_metadata_from_json "$json" "raw-json" "raw-json"
+    elif [[ -n "${FINALMASK_PACKETS_REQUEST:-}${FINALMASK_LENGTH_REQUEST:-}${FINALMASK_DELAY_REQUEST:-}${FINALMASK_MAX_SPLIT_REQUEST:-}" ]]; then
+        set_finalmask_metadata_from_json "$json" "custom" "custom"
+    else
+        preset="${FINALMASK_PRESET_REQUEST:-balanced}"
+        [[ "$preset" == "default" ]] && preset="balanced"
+        set_finalmask_metadata_from_json "$json" "preset" "$preset"
+    fi
+}
+
+finalmask_extra_options_specified() {
+    [[ -n "${FINALMASK_PRESET_REQUEST:-}" ||
+        -n "${FINALMASK_JSON_REQUEST:-}" ||
+        -n "${FINALMASK_PACKETS_REQUEST:-}" ||
+        -n "${FINALMASK_LENGTH_REQUEST:-}" ||
+        -n "${FINALMASK_DELAY_REQUEST:-}" ||
+        -n "${FINALMASK_MAX_SPLIT_REQUEST:-}" ]]
+}
+
+build_finalmask_json() {
+    local preset packets length delay max_split json
+
+    if [[ -n "${FINALMASK_JSON_REQUEST:-}" ]]; then
+        validate_finalmask_json "$FINALMASK_JSON_REQUEST" || {
+            err "[FinalMask] --finalmask-json 不是可用的 FinalMask JSON。"
+            return 1
+        }
+        json="$(jq -c . <<<"$FINALMASK_JSON_REQUEST")" || return 1
+        set_finalmask_metadata_from_json "$json" "raw-json" "raw-json"
+        printf '%s' "$json"
+        return 0
+    fi
+
+    if [[ -n "${FINALMASK_PRESET_REQUEST:-}" ]] &&
+        [[ -n "${FINALMASK_PACKETS_REQUEST:-}${FINALMASK_LENGTH_REQUEST:-}${FINALMASK_DELAY_REQUEST:-}${FINALMASK_MAX_SPLIT_REQUEST:-}" ]]; then
+        err "[FinalMask] --finalmask-preset 不能和 --fm-* 自定义参数同时使用。"
+        return 1
+    fi
+
+    if [[ -n "${FINALMASK_PACKETS_REQUEST:-}${FINALMASK_LENGTH_REQUEST:-}${FINALMASK_DELAY_REQUEST:-}${FINALMASK_MAX_SPLIT_REQUEST:-}" ]]; then
+        packets="${FINALMASK_PACKETS_REQUEST:-tlshello}"
+        length="${FINALMASK_LENGTH_REQUEST:-100-200}"
+        delay="${FINALMASK_DELAY_REQUEST:-10-20}"
+        max_split="${FINALMASK_MAX_SPLIT_REQUEST:-3-6}"
+        json="$(build_finalmask_custom_json "$packets" "$length" "$delay" "$max_split")" || return 1
+        set_finalmask_metadata_from_json "$json" "custom" "custom"
+        printf '%s' "$json"
+        return 0
+    fi
+
+    preset="${FINALMASK_PRESET_REQUEST:-balanced}"
+    [[ "$preset" == "default" ]] && preset="balanced"
+    json="$(build_finalmask_preset_json "$preset")" || return 1
+    set_finalmask_metadata_from_json "$json" "preset" "$preset"
+    printf '%s' "$json"
+}
+
+print_finalmask_summary() {
+    local enabled="$1"
+    local mode="$2"
+    local preset="$3"
+    local summary="$4"
+
+    echo "FinalMask: $([[ "$enabled" == "true" ]] && printf on || printf off)"
+    echo "FinalMask 模式: ${mode:-off}"
+    echo "FinalMask 预设: ${preset:-none}"
+    [[ -n "$summary" ]] && echo "FinalMask 摘要: ${summary}"
+}
+
+ask_finalmask_config() {
+    local input packets length delay max_split raw_json
+
+    echo -e "\n${YELLOW}[FinalMask] 选择参数模板:${PLAIN}"
+    echo "  1) 保守 conservative：更稳，分片较轻"
+    echo "  2) 均衡 balanced：默认推荐，当前实测模板"
+    echo "  3) 激进 aggressive：混淆更强，可能影响速度和兼容性"
+    echo "  4) 自定义参数 custom"
+    echo "  5) 粘贴完整 JSON raw-json"
+    read -r -p "选项 (默认: 2): " input
+
+    FINALMASK_PRESET_REQUEST=""
+    FINALMASK_JSON_REQUEST=""
+    FINALMASK_PACKETS_REQUEST=""
+    FINALMASK_LENGTH_REQUEST=""
+    FINALMASK_DELAY_REQUEST=""
+    FINALMASK_MAX_SPLIT_REQUEST=""
+
+    case "${input:-2}" in
+        1) FINALMASK_PRESET_REQUEST="conservative" ;;
+        2) FINALMASK_PRESET_REQUEST="balanced" ;;
+        3) FINALMASK_PRESET_REQUEST="aggressive" ;;
+        4)
+            while true; do
+                read -r -p "packets (默认: tlshello): " packets
+                packets="${packets:-tlshello}"
+                validate_finalmask_packets "$packets" && break
+                err "[FinalMask] packets 目前仅支持 tlshello。"
+            done
+            while true; do
+                read -r -p "length 范围 (默认: 100-200): " length
+                length="${length:-100-200}"
+                validate_finalmask_range "$length" 1 1500 && break
+                err "[FinalMask] length 必须是 1-1500 内的整数或 A-B 范围，且 A <= B。"
+            done
+            while true; do
+                read -r -p "delay 范围 ms (默认: 10-20): " delay
+                delay="${delay:-10-20}"
+                validate_finalmask_range "$delay" 0 1000 && break
+                err "[FinalMask] delay 必须是 0-1000 内的整数或 A-B 范围，且 A <= B。"
+            done
+            while true; do
+                read -r -p "maxSplit 范围 (默认: 3-6): " max_split
+                max_split="${max_split:-3-6}"
+                validate_finalmask_range "$max_split" 1 20 && break
+                err "[FinalMask] maxSplit 必须是 1-20 内的整数或 A-B 范围，且 A <= B。"
+            done
+            FINALMASK_PACKETS_REQUEST="$packets"
+            FINALMASK_LENGTH_REQUEST="$length"
+            FINALMASK_DELAY_REQUEST="$delay"
+            FINALMASK_MAX_SPLIT_REQUEST="$max_split"
+            ;;
+        5)
+            info "[FinalMask] 原始 JSON 属于高级功能，错误配置可能导致 Xray 校验失败，失败会自动回滚。"
+            read -r -p "粘贴完整 FinalMask JSON: " raw_json
+            FINALMASK_JSON_REQUEST="$raw_json"
+            ;;
+        *)
+            err "[FinalMask] 无效选项。"
+            return 1
+            ;;
+    esac
+    build_finalmask_json >/dev/null
+}
+
+parse_finalmask_args() {
+    local option="${1:-}"
+    local value="${2:-}"
+
+    FINALMASK_ARG_SHIFT=0
+    case "$option" in
+        --finalmask-preset)
+            [[ -n "$value" ]] || {
+                err "[FinalMask] --finalmask-preset 缺少值。"
+                return 1
+            }
+            FINALMASK_PRESET_REQUEST="$value"
+            FINALMASK_ARG_SHIFT=2
+            ;;
+        --fm-packets)
+            [[ -n "$value" ]] || {
+                err "[FinalMask] --fm-packets 缺少值。"
+                return 1
+            }
+            FINALMASK_PACKETS_REQUEST="$value"
+            FINALMASK_ARG_SHIFT=2
+            ;;
+        --fm-length)
+            [[ -n "$value" ]] || {
+                err "[FinalMask] --fm-length 缺少值。"
+                return 1
+            }
+            FINALMASK_LENGTH_REQUEST="$value"
+            FINALMASK_ARG_SHIFT=2
+            ;;
+        --fm-delay)
+            [[ -n "$value" ]] || {
+                err "[FinalMask] --fm-delay 缺少值。"
+                return 1
+            }
+            FINALMASK_DELAY_REQUEST="$value"
+            FINALMASK_ARG_SHIFT=2
+            ;;
+        --fm-max-split)
+            [[ -n "$value" ]] || {
+                err "[FinalMask] --fm-max-split 缺少值。"
+                return 1
+            }
+            FINALMASK_MAX_SPLIT_REQUEST="$value"
+            FINALMASK_ARG_SHIFT=2
+            ;;
+        --finalmask-json)
+            [[ -n "$value" ]] || {
+                err "[FinalMask] --finalmask-json 缺少值。"
+                return 1
+            }
+            FINALMASK_JSON_REQUEST="$value"
+            FINALMASK_ARG_SHIFT=2
+            ;;
+        *)
+            return 2
+            ;;
+    esac
 }
 
 configure_vless_xhttp_finalmask() {
@@ -2609,6 +2963,9 @@ configure_vless_xhttp_finalmask() {
             n | no) XHTTP_FINALMASK_ENABLED="false" ;;
             *) XHTTP_FINALMASK_ENABLED="true" ;;
         esac
+        if [[ "$XHTTP_FINALMASK_ENABLED" == "true" ]]; then
+            ask_finalmask_config || return 1
+        fi
     else
         if [[ -n "${XHTTP_PORT_REQUEST:-}" ]]; then
             validate_port "$XHTTP_PORT_REQUEST" || {
@@ -2640,7 +2997,21 @@ configure_vless_xhttp_finalmask() {
             ;;
     esac
 
-    XHTTP_FINALMASK_JSON="$(default_finalmask_json)" || return 1
+    if [[ "$XHTTP_FINALMASK_ENABLED" == "true" ]]; then
+        XHTTP_FINALMASK_JSON="$(build_finalmask_json)" || return 1
+        set_finalmask_metadata_from_requests "$XHTTP_FINALMASK_JSON"
+        XHTTP_FINALMASK_MODE="$FINALMASK_MODE"
+        XHTTP_FINALMASK_PRESET="$FINALMASK_PRESET"
+        XHTTP_FINALMASK_SUMMARY="$FINALMASK_SUMMARY"
+    else
+        if finalmask_extra_options_specified; then
+            info "[FinalMask] FinalMask 已关闭，忽略 FinalMask 参数。"
+        fi
+        XHTTP_FINALMASK_JSON=""
+        XHTTP_FINALMASK_MODE="off"
+        XHTTP_FINALMASK_PRESET="none"
+        XHTTP_FINALMASK_SUMMARY="off"
+    fi
     VLESS_UUID="$(generate_uuid)" || return 1
     generate_vless_encryption_pair "$VLESS_AUTH" || return 1
 }
@@ -2688,12 +3059,22 @@ build_vless_xhttp_finalmask_share_link() {
 state_set_vless_xhttp_finalmask() {
     init_state
     local tmp link timestamp finalmask_json
+    local finalmask_mode finalmask_preset finalmask_summary
 
     link="$(build_vless_xhttp_finalmask_share_link || true)"
     timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     finalmask_json="null"
+    finalmask_mode="${XHTTP_FINALMASK_MODE:-off}"
+    finalmask_preset="${XHTTP_FINALMASK_PRESET:-none}"
+    finalmask_summary="${XHTTP_FINALMASK_SUMMARY:-off}"
     if [[ "$XHTTP_FINALMASK_ENABLED" == "true" ]]; then
         finalmask_json="$XHTTP_FINALMASK_JSON"
+        if [[ "$finalmask_mode" == "off" || "$finalmask_preset" == "none" || "$finalmask_summary" == "off" || -z "$finalmask_summary" ]]; then
+            set_finalmask_metadata_from_json "$finalmask_json"
+            finalmask_mode="$FINALMASK_MODE"
+            finalmask_preset="$FINALMASK_PRESET"
+            finalmask_summary="$FINALMASK_SUMMARY"
+        fi
     fi
 
     tmp="$(mktemp)" || return 1
@@ -2706,6 +3087,9 @@ state_set_vless_xhttp_finalmask() {
         --arg client_rtt "$VLESS_CLIENT_RTT" \
         --arg server_ticket "$VLESS_SERVER_TICKET" \
         --arg finalmask_enabled "$XHTTP_FINALMASK_ENABLED" \
+        --arg finalmask_mode "$finalmask_mode" \
+        --arg finalmask_preset "$finalmask_preset" \
+        --arg finalmask_summary "$finalmask_summary" \
         --argjson finalmask_json "$finalmask_json" \
         --arg listen_scope "ipv4" \
         --arg created_at "$timestamp" \
@@ -2721,6 +3105,9 @@ state_set_vless_xhttp_finalmask() {
           "client_rtt": $client_rtt,
           "server_ticket": $server_ticket,
           "finalmask_enabled": ($finalmask_enabled == "true"),
+          "finalmask_mode": $finalmask_mode,
+          "finalmask_preset": $finalmask_preset,
+          "finalmask_summary": $finalmask_summary,
           "finalmask_json": $finalmask_json,
           "listen_scope": $listen_scope,
           "created_at": $created_at,
@@ -2743,6 +3130,11 @@ print_xhttp_dry_run() {
     echo "入口端口: ${XHTTP_PORT}"
     echo "Path: ${XHTTP_PATH}"
     echo "FinalMask: ${fm_state}"
+    if [[ "$fm_state" == "on" ]]; then
+        echo "FinalMask 模式: ${XHTTP_FINALMASK_MODE:-preset}"
+        echo "FinalMask 预设: ${XHTTP_FINALMASK_PRESET:-balanced}"
+        echo "FinalMask 摘要: ${XHTTP_FINALMASK_SUMMARY:-}"
+    fi
     [[ -n "$link" ]] && echo "Masked Link: $(mask_share_link "$link")"
     echo "将写入 inbound:"
     echo "- ${VLESS_XHTTP_FM_TAG}"
@@ -2844,6 +3236,7 @@ install_vless_xhttp_finalmask() {
 print_vless_xhttp_finalmask_result() {
     local missing_mode="${1:-skip}"
     local state_exists link port path uuid encryption auth enc_method rtt ticket fm_enabled fm_json endpoint_pair
+    local fm_mode fm_preset fm_summary
     local address link_port
 
     if [[ ! -f "$STATE_FILE" ]]; then
@@ -2866,6 +3259,9 @@ print_vless_xhttp_finalmask_result() {
     rtt="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.client_rtt // empty" "$STATE_FILE" 2>/dev/null)"
     ticket="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.server_ticket // empty" "$STATE_FILE" 2>/dev/null)"
     fm_enabled="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
+    fm_mode="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_mode // \"off\"" "$STATE_FILE" 2>/dev/null)"
+    fm_preset="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_preset // \"none\"" "$STATE_FILE" 2>/dev/null)"
+    fm_summary="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_summary // empty" "$STATE_FILE" 2>/dev/null)"
     fm_json="$(jq -c ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_json // empty" "$STATE_FILE" 2>/dev/null)"
     endpoint_pair="$(link_endpoint_for_tag "$port" "$VLESS_XHTTP_FM_TAG" "$VLESS_XHTTP_FM_STATE_KEY")"
     IFS=$'\t' read -r address link_port <<<"$endpoint_pair"
@@ -2875,8 +3271,13 @@ print_vless_xhttp_finalmask_result() {
     echo -e "Path: ${path}"
     if [[ "$fm_enabled" == "true" ]]; then
         echo -e "FinalMask: on"
+        echo -e "FinalMask 模式: ${fm_mode}"
+        echo -e "FinalMask 预设: ${fm_preset}"
+        [[ -n "$fm_summary" ]] && echo -e "FinalMask 摘要: ${fm_summary}"
     else
         echo -e "FinalMask: off（未启用 FinalMask）"
+        echo -e "FinalMask 模式: off"
+        echo -e "FinalMask 预设: none"
     fi
     [[ -n "$link" ]] && echo -e "VLESS URL: ${link}"
     if [[ "${CURRENT_LINK_VIEW_MODE:-dual}" == "ipv6" ]] && ! should_print_ipv6_link "ipv6" "$VLESS_XHTTP_FM_TAG" "$VLESS_XHTTP_FM_STATE_KEY"; then
@@ -2895,6 +3296,9 @@ print_vless_xhttp_finalmask_result() {
     echo "  VLESS Encryption: ${encryption}"
     echo "  Path: ${path}"
     echo "  FinalMask: ${fm_enabled}"
+    echo "  FinalMask 模式: ${fm_mode}"
+    echo "  FinalMask 预设: ${fm_preset}"
+    [[ -n "$fm_summary" ]] && echo "  FinalMask 摘要: ${fm_summary}"
     echo "  Auth: ${auth}"
     echo "  EncMethod: ${enc_method}"
     echo "  ClientRTT: ${rtt}"
@@ -3154,10 +3558,6 @@ build_reality_settings_json() {
       }'
 }
 
-build_finalmask_json() {
-    default_finalmask_json
-}
-
 print_advanced_compat_hint() {
     local kind="$1"
 
@@ -3268,6 +3668,9 @@ configure_advanced_profile() {
                 n | no) ADVANCED_FINALMASK_ENABLED="false" ;;
                 *) ADVANCED_FINALMASK_ENABLED="true" ;;
             esac
+            if [[ "$ADVANCED_FINALMASK_ENABLED" == "true" ]]; then
+                ask_finalmask_config || return 1
+            fi
         else
             ADVANCED_FINALMASK_ENABLED="${ADVANCED_FINALMASK_REQUEST:-true}"
         fi
@@ -3279,7 +3682,21 @@ configure_advanced_profile() {
                 return 1
                 ;;
         esac
-        ADVANCED_FINALMASK_JSON="$(build_finalmask_json)" || return 1
+        if [[ "$ADVANCED_FINALMASK_ENABLED" == "true" ]]; then
+            ADVANCED_FINALMASK_JSON="$(build_finalmask_json)" || return 1
+            set_finalmask_metadata_from_requests "$ADVANCED_FINALMASK_JSON"
+            ADVANCED_FINALMASK_MODE="$FINALMASK_MODE"
+            ADVANCED_FINALMASK_PRESET="$FINALMASK_PRESET"
+            ADVANCED_FINALMASK_SUMMARY="$FINALMASK_SUMMARY"
+        else
+            if finalmask_extra_options_specified; then
+                info "[FinalMask] FinalMask 已关闭，忽略 FinalMask 参数。"
+            fi
+            ADVANCED_FINALMASK_JSON=""
+            ADVANCED_FINALMASK_MODE="off"
+            ADVANCED_FINALMASK_PRESET="none"
+            ADVANCED_FINALMASK_SUMMARY="off"
+        fi
     else
         ADVANCED_FINALMASK_ENABLED="false"
         ADVANCED_FINALMASK_JSON=""
@@ -3355,14 +3772,24 @@ state_set_advanced_profile() {
     init_state
     local kind="$1"
     local state_key tmp link timestamp finalmask_json hash32
+    local finalmask_mode finalmask_preset finalmask_summary
 
     state_key="$(advanced_profile_state_key "$kind")" || return 1
     link="$(build_advanced_share_link "$kind" || true)"
     timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     hash32="${REALITY_X25519_HASH32:-}"
     finalmask_json="null"
+    finalmask_mode="${ADVANCED_FINALMASK_MODE:-off}"
+    finalmask_preset="${ADVANCED_FINALMASK_PRESET:-none}"
+    finalmask_summary="${ADVANCED_FINALMASK_SUMMARY:-off}"
     if advanced_profile_has_finalmask "$kind" && [[ "$ADVANCED_FINALMASK_ENABLED" == "true" ]]; then
         finalmask_json="$ADVANCED_FINALMASK_JSON"
+        if [[ "$finalmask_mode" == "off" || "$finalmask_preset" == "none" || "$finalmask_summary" == "off" || -z "$finalmask_summary" ]]; then
+            set_finalmask_metadata_from_json "$finalmask_json"
+            finalmask_mode="$FINALMASK_MODE"
+            finalmask_preset="$FINALMASK_PRESET"
+            finalmask_summary="$FINALMASK_SUMMARY"
+        fi
     fi
 
     tmp="$(mktemp)" || return 1
@@ -3384,6 +3811,9 @@ state_set_advanced_profile() {
         --arg client_rtt "${VLESS_CLIENT_RTT:-}" \
         --arg server_ticket "${VLESS_SERVER_TICKET:-}" \
         --arg finalmask_enabled "${ADVANCED_FINALMASK_ENABLED:-false}" \
+        --arg finalmask_mode "$finalmask_mode" \
+        --arg finalmask_preset "$finalmask_preset" \
+        --arg finalmask_summary "$finalmask_summary" \
         --argjson finalmask_json "$finalmask_json" \
         --arg hash32 "$hash32" \
         --arg listen_scope "ipv4" \
@@ -3415,6 +3845,9 @@ state_set_advanced_profile() {
         else . end |
         if $kind == "fullstack" then
           .[$state_key].finalmask_enabled = ($finalmask_enabled == "true") |
+          .[$state_key].finalmask_mode = $finalmask_mode |
+          .[$state_key].finalmask_preset = $finalmask_preset |
+          .[$state_key].finalmask_summary = $finalmask_summary |
           .[$state_key].finalmask_json = $finalmask_json
         else . end |
         if $hash32 != "" then .[$state_key].hash32 = $hash32 else . end
@@ -3440,6 +3873,11 @@ print_advanced_dry_run() {
     echo "PublicKey: $(mask_value "$REALITY_PUBLIC_KEY" 6)"
     advanced_profile_has_encryption "$kind" && echo "VLESS Encryption: $(mask_value "$VLESS_ENCRYPTION" 8)"
     advanced_profile_has_finalmask "$kind" && echo "FinalMask: $([[ "${ADVANCED_FINALMASK_ENABLED:-false}" == "true" ]] && printf on || printf off)"
+    if advanced_profile_has_finalmask "$kind" && [[ "${ADVANCED_FINALMASK_ENABLED:-false}" == "true" ]]; then
+        echo "FinalMask 模式: ${ADVANCED_FINALMASK_MODE:-preset}"
+        echo "FinalMask 预设: ${ADVANCED_FINALMASK_PRESET:-balanced}"
+        echo "FinalMask 摘要: ${ADVANCED_FINALMASK_SUMMARY:-}"
+    fi
     [[ -n "$link" ]] && echo "Masked Link: $(mask_share_link "$link")"
     echo "将写入 inbound:"
     echo "- $(advanced_profile_tag "$kind")"
@@ -3563,6 +4001,7 @@ print_advanced_profile_result() {
     local kind="$1"
     local missing_mode="${2:-skip}"
     local state_key state_exists link port uuid path encryption server_name public_key short_id spider_x fm_enabled fm_json endpoint_pair
+    local fm_mode fm_preset fm_summary
     local address link_port name transport
 
     state_key="$(advanced_profile_state_key "$kind")" || return 1
@@ -3588,6 +4027,9 @@ print_advanced_profile_result() {
     short_id="$(jq -r ".${state_key}.default_short_id // empty" "$STATE_FILE" 2>/dev/null)"
     spider_x="$(jq -r ".${state_key}.spider_x // \"/\"" "$STATE_FILE" 2>/dev/null)"
     fm_enabled="$(jq -r ".${state_key}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
+    fm_mode="$(jq -r ".${state_key}.finalmask_mode // \"off\"" "$STATE_FILE" 2>/dev/null)"
+    fm_preset="$(jq -r ".${state_key}.finalmask_preset // \"none\"" "$STATE_FILE" 2>/dev/null)"
+    fm_summary="$(jq -r ".${state_key}.finalmask_summary // empty" "$STATE_FILE" 2>/dev/null)"
     fm_json="$(jq -c ".${state_key}.finalmask_json // empty" "$STATE_FILE" 2>/dev/null)"
     endpoint_pair="$(link_endpoint_for_tag "$port" "$(advanced_profile_tag "$kind")" "$state_key")"
     IFS=$'\t' read -r address link_port <<<"$endpoint_pair"
@@ -3597,6 +4039,11 @@ print_advanced_profile_result() {
     advanced_profile_has_xhttp "$kind" && echo -e "Path: ${path}"
     echo -e "REALITY target: ${server_name}:443"
     advanced_profile_has_finalmask "$kind" && echo -e "FinalMask: $([[ "$fm_enabled" == "true" ]] && printf on || printf 'off（未启用 FinalMask）')"
+    if advanced_profile_has_finalmask "$kind"; then
+        echo -e "FinalMask 模式: ${fm_mode}"
+        echo -e "FinalMask 预设: ${fm_preset}"
+        [[ -n "$fm_summary" ]] && echo -e "FinalMask 摘要: ${fm_summary}"
+    fi
     [[ -n "$link" ]] && echo -e "VLESS URL: ${link}"
     if [[ "${CURRENT_LINK_VIEW_MODE:-dual}" == "ipv6" ]] && ! should_print_ipv6_link "ipv6" "$(advanced_profile_tag "$kind")" "$state_key"; then
         print_ipv6_status_hint "$(advanced_profile_tag "$kind")" "$state_key"
@@ -3617,6 +4064,11 @@ print_advanced_profile_result() {
     echo "  ShortID: ${short_id}"
     advanced_profile_has_encryption "$kind" && echo "  VLESS Encryption: ${encryption}"
     advanced_profile_has_finalmask "$kind" && echo "  FinalMask: ${fm_enabled}"
+    if advanced_profile_has_finalmask "$kind"; then
+        echo "  FinalMask 模式: ${fm_mode}"
+        echo "  FinalMask 预设: ${fm_preset}"
+        [[ -n "$fm_summary" ]] && echo "  FinalMask 摘要: ${fm_summary}"
+    fi
     if advanced_profile_has_finalmask "$kind" && [[ "$fm_enabled" == "true" && -n "$fm_json" && "$fm_json" != "null" ]]; then
         echo "  FinalMask JSON: ${fm_json}"
     fi
@@ -8274,7 +8726,7 @@ render_export_report() {
     echo "XHTTP-FinalMask 摘要:"
     if inbound_exists "$VLESS_XHTTP_FM_TAG"; then
         jq -r --arg tag "$VLESS_XHTTP_FM_TAG" '.inbounds[]? | select(.tag == $tag) | "  port=\(.port) path=\(.streamSettings.xhttpSettings.path // "") finalmask=\(.streamSettings | has("finalmask"))"' "$CONFIG_FILE"
-        jq -r ".${VLESS_XHTTP_FM_STATE_KEY} // {} | \"  finalmask_enabled=\(.finalmask_enabled // false) link=\(.link // \"\")\"" "$STATE_FILE" 2>/dev/null
+        jq -r ".${VLESS_XHTTP_FM_STATE_KEY} // {} | \"  finalmask_enabled=\(.finalmask_enabled // false) mode=\(.finalmask_mode // \"off\") preset=\(.finalmask_preset // \"none\") summary=\(.finalmask_summary // \"\") link=\(.link // \"\")\"" "$STATE_FILE" 2>/dev/null
     else
         echo "  未安装"
     fi
@@ -8294,7 +8746,7 @@ render_export_report() {
     fi
     if inbound_exists "$VLESS_FULLSTACK_TAG"; then
         jq -r --arg tag "$VLESS_FULLSTACK_TAG" '.inbounds[]? | select(.tag == $tag) | "  FullStack port=\(.port) path=\(.streamSettings.xhttpSettings.path // "") sni=\(.streamSettings.realitySettings.serverNames[0] // "") finalmask=\(.streamSettings | has("finalmask"))"' "$CONFIG_FILE"
-        jq -r ".${VLESS_FULLSTACK_STATE_KEY} // {} | \"    publicKey=\(.public_key // \"\") shortId=\(.default_short_id // \"\") finalmask_enabled=\(.finalmask_enabled // false)\"" "$STATE_FILE" 2>/dev/null
+        jq -r ".${VLESS_FULLSTACK_STATE_KEY} // {} | \"    publicKey=\(.public_key // \"\") shortId=\(.default_short_id // \"\") finalmask_enabled=\(.finalmask_enabled // false) mode=\(.finalmask_mode // \"off\") preset=\(.finalmask_preset // \"none\") summary=\(.finalmask_summary // \"\")\"" "$STATE_FILE" 2>/dev/null
     else
         echo "  FullStack: 未安装"
     fi
@@ -8466,6 +8918,9 @@ migrate_old_state() {
     local old_xhttp_finalmask_json
     local ss_scope="" vless_scope="" reality_scope="" xhttp_scope="" socks_scope=""
     local xhttp_reality_scope="" enc_reality_scope="" fullstack_scope=""
+    local xhttp_fm_mode="" xhttp_fm_preset="" xhttp_fm_summary=""
+    local fullstack_fm_mode="" fullstack_fm_preset="" fullstack_fm_summary=""
+    local fullstack_enabled fullstack_json
 
     if [[ "$dry_run" == "true" ]]; then
         [[ -f "$STATE_FILE" ]] || {
@@ -8481,6 +8936,48 @@ migrate_old_state() {
     old_xhttp_enabled="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_enabled // empty" "$STATE_FILE" 2>/dev/null)"
     old_xhttp_link="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.link // empty" "$STATE_FILE" 2>/dev/null)"
     old_xhttp_finalmask_json="$(jq -c ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_json // empty" "$STATE_FILE" 2>/dev/null)"
+
+    if jq -e ".${VLESS_XHTTP_FM_STATE_KEY}? and (((.${VLESS_XHTTP_FM_STATE_KEY}.finalmask_mode // \"\") == \"\") or ((.${VLESS_XHTTP_FM_STATE_KEY}.finalmask_preset // \"\") == \"\") or ((.${VLESS_XHTTP_FM_STATE_KEY}.finalmask_summary // \"\") == \"\"))" "$STATE_FILE" >/dev/null 2>&1; then
+        if [[ "${old_xhttp_enabled:-false}" == "true" ]]; then
+            [[ -n "$old_xhttp_finalmask_json" && "$old_xhttp_finalmask_json" != "null" ]] || old_xhttp_finalmask_json="$(jq -c --arg tag "$VLESS_XHTTP_FM_TAG" '.inbounds[]? | select(.tag == $tag).streamSettings.finalmask // null' "$CONFIG_FILE" 2>/dev/null)"
+            if validate_finalmask_json "$old_xhttp_finalmask_json"; then
+                set_finalmask_metadata_from_json "$old_xhttp_finalmask_json"
+                xhttp_fm_mode="$FINALMASK_MODE"
+                xhttp_fm_preset="$FINALMASK_PRESET"
+                xhttp_fm_summary="$FINALMASK_SUMMARY"
+                changed="true"
+            else
+                diag_warn "无法推导 vless_xhttp_finalmask FinalMask 元数据"
+            fi
+        else
+            xhttp_fm_mode="off"
+            xhttp_fm_preset="none"
+            xhttp_fm_summary="off"
+            changed="true"
+        fi
+    fi
+
+    if jq -e ".${VLESS_FULLSTACK_STATE_KEY}? and (((.${VLESS_FULLSTACK_STATE_KEY}.finalmask_mode // \"\") == \"\") or ((.${VLESS_FULLSTACK_STATE_KEY}.finalmask_preset // \"\") == \"\") or ((.${VLESS_FULLSTACK_STATE_KEY}.finalmask_summary // \"\") == \"\"))" "$STATE_FILE" >/dev/null 2>&1; then
+        fullstack_enabled="$(jq -r ".${VLESS_FULLSTACK_STATE_KEY}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
+        if [[ "$fullstack_enabled" == "true" ]]; then
+            fullstack_json="$(jq -c ".${VLESS_FULLSTACK_STATE_KEY}.finalmask_json // empty" "$STATE_FILE" 2>/dev/null)"
+            [[ -n "$fullstack_json" && "$fullstack_json" != "null" ]] || fullstack_json="$(jq -c --arg tag "$VLESS_FULLSTACK_TAG" '.inbounds[]? | select(.tag == $tag).streamSettings.finalmask // null' "$CONFIG_FILE" 2>/dev/null)"
+            if validate_finalmask_json "$fullstack_json"; then
+                set_finalmask_metadata_from_json "$fullstack_json"
+                fullstack_fm_mode="$FINALMASK_MODE"
+                fullstack_fm_preset="$FINALMASK_PRESET"
+                fullstack_fm_summary="$FINALMASK_SUMMARY"
+                changed="true"
+            else
+                diag_warn "无法推导 vless_fullstack FinalMask 元数据"
+            fi
+        else
+            fullstack_fm_mode="off"
+            fullstack_fm_preset="none"
+            fullstack_fm_summary="off"
+            changed="true"
+        fi
+    fi
 
     if [[ -f "$CONFIG_FILE" ]]; then
         if jq -e '.ss2022? and ((.ss2022.listen_scope // "") == "")' "$STATE_FILE" >/dev/null 2>&1; then
@@ -8611,6 +9108,12 @@ migrate_old_state() {
         --arg xhttp_reality_scope "$xhttp_reality_scope" \
         --arg enc_reality_scope "$enc_reality_scope" \
         --arg fullstack_scope "$fullstack_scope" \
+        --arg xhttp_fm_mode "$xhttp_fm_mode" \
+        --arg xhttp_fm_preset "$xhttp_fm_preset" \
+        --arg xhttp_fm_summary "$xhttp_fm_summary" \
+        --arg fullstack_fm_mode "$fullstack_fm_mode" \
+        --arg fullstack_fm_preset "$fullstack_fm_preset" \
+        --arg fullstack_fm_summary "$fullstack_fm_summary" \
         --arg xhttp_reality_key "$VLESS_XHTTP_REALITY_STATE_KEY" \
         --arg enc_reality_key "$VLESS_ENC_REALITY_STATE_KEY" \
         --arg fullstack_key "$VLESS_FULLSTACK_STATE_KEY" '
@@ -8625,6 +9128,9 @@ migrate_old_state() {
         else . end |
         if .[$xhttp_key]? then
           (if ((.[$xhttp_key] | has("finalmask_enabled") | not) and $xhttp_enabled != "") then .[$xhttp_key].finalmask_enabled = ($xhttp_enabled == "true") else . end) |
+          (if ((.[$xhttp_key].finalmask_mode // "") == "" and $xhttp_fm_mode != "") then .[$xhttp_key].finalmask_mode = $xhttp_fm_mode else . end) |
+          (if ((.[$xhttp_key].finalmask_preset // "") == "" and $xhttp_fm_preset != "") then .[$xhttp_key].finalmask_preset = $xhttp_fm_preset else . end) |
+          (if ((.[$xhttp_key].finalmask_summary // "") == "" and $xhttp_fm_summary != "") then .[$xhttp_key].finalmask_summary = $xhttp_fm_summary else . end) |
           (if ((.[$xhttp_key].finalmask_json // null) == null and $xhttp_finalmask_json != null) then .[$xhttp_key].finalmask_json = $xhttp_finalmask_json else . end) |
           (if ($xhttp_link != "") then .[$xhttp_key].link = (.[$xhttp_key].link // $xhttp_link) else . end)
         else . end |
@@ -8635,7 +9141,12 @@ migrate_old_state() {
         fill_scope("socks5"; $socks_scope) |
         fill_scope($xhttp_reality_key; $xhttp_reality_scope) |
         fill_scope($enc_reality_key; $enc_reality_scope) |
-        fill_scope($fullstack_key; $fullstack_scope)
+        fill_scope($fullstack_key; $fullstack_scope) |
+        (if .[$fullstack_key]? then
+          (if ((.[$fullstack_key].finalmask_mode // "") == "" and $fullstack_fm_mode != "") then .[$fullstack_key].finalmask_mode = $fullstack_fm_mode else . end) |
+          (if ((.[$fullstack_key].finalmask_preset // "") == "" and $fullstack_fm_preset != "") then .[$fullstack_key].finalmask_preset = $fullstack_fm_preset else . end) |
+          (if ((.[$fullstack_key].finalmask_summary // "") == "" and $fullstack_fm_summary != "") then .[$fullstack_key].finalmask_summary = $fullstack_fm_summary else . end)
+        else . end)
       ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
     rm -f "$tmp"
     ensure_config_security
@@ -8780,7 +9291,7 @@ EOF
 show_xhttp_usage() {
     cat <<'EOF'
 用法:
-  ike xhttp install [--port PORT] [--path /path] [--finalmask on|off] [--dry-run] [--auth x25519|mlkem768]
+  ike xhttp install [--port PORT] [--path /path] [--finalmask on|off] [--finalmask-preset conservative|balanced|aggressive] [--fm-length 100-200] [--fm-delay 10-20] [--fm-max-split 3-6] [--finalmask-json JSON] [--dry-run] [--auth x25519|mlkem768]
   ike xhttp show
   ike xhttp remove
   ike view xhttp
@@ -8876,6 +9387,12 @@ run_xhttp_command() {
             XHTTP_PORT_REQUEST=""
             XHTTP_PATH_REQUEST=""
             XHTTP_FINALMASK_REQUEST="true"
+            FINALMASK_PRESET_REQUEST=""
+            FINALMASK_JSON_REQUEST=""
+            FINALMASK_PACKETS_REQUEST=""
+            FINALMASK_LENGTH_REQUEST=""
+            FINALMASK_DELAY_REQUEST=""
+            FINALMASK_MAX_SPLIT_REQUEST=""
             XHTTP_DRY_RUN="false"
             VLESS_MODE="basic"
             VLESS_AUTH="x25519"
@@ -8895,6 +9412,12 @@ run_xhttp_command() {
                     --finalmask)
                         XHTTP_FINALMASK_REQUEST="${2:-}"
                         shift 2
+                        ;;
+                    --finalmask-preset | --fm-packets | --fm-length | --fm-delay | --fm-max-split | --finalmask-json)
+                        if ! parse_finalmask_args "$1" "${2:-}"; then
+                            return 1
+                        fi
+                        shift "$FINALMASK_ARG_SHIFT"
                         ;;
                     --auth)
                         VLESS_AUTH="${2:-}"
@@ -8985,7 +9508,7 @@ EOF
         fullstack)
             cat <<'EOF'
 用法:
-  ike fullstack install [--port PORT] [--path /path] [--sni DOMAIN] [--finalmask on|off] [--dry-run] [--yes] [--auth x25519|mlkem768]
+  ike fullstack install [--port PORT] [--path /path] [--sni DOMAIN] [--finalmask on|off] [--finalmask-preset conservative|balanced|aggressive] [--fm-length 100-200] [--fm-delay 10-20] [--fm-max-split 3-6] [--finalmask-json JSON] [--dry-run] [--yes] [--auth x25519|mlkem768]
   ike fullstack show
   ike fullstack remove
   ike view fullstack
@@ -9009,6 +9532,12 @@ run_advanced_profile_command() {
             ADVANCED_SNI_REQUEST=""
             ADVANCED_FINALMASK_REQUEST="true"
             ADVANCED_FINALMASK_SPECIFIED="false"
+            FINALMASK_PRESET_REQUEST=""
+            FINALMASK_JSON_REQUEST=""
+            FINALMASK_PACKETS_REQUEST=""
+            FINALMASK_LENGTH_REQUEST=""
+            FINALMASK_DELAY_REQUEST=""
+            FINALMASK_MAX_SPLIT_REQUEST=""
             ADVANCED_AUTH_SPECIFIED="false"
             ADVANCED_ASSUME_YES="false"
             ADVANCED_DRY_RUN="false"
@@ -9035,6 +9564,13 @@ run_advanced_profile_command() {
                         ADVANCED_FINALMASK_REQUEST="${2:-}"
                         ADVANCED_FINALMASK_SPECIFIED="true"
                         shift 2
+                        ;;
+                    --finalmask-preset | --fm-packets | --fm-length | --fm-delay | --fm-max-split | --finalmask-json)
+                        if ! parse_finalmask_args "$1" "${2:-}"; then
+                            return 1
+                        fi
+                        ADVANCED_FINALMASK_SPECIFIED="true"
+                        shift "$FINALMASK_ARG_SHIFT"
                         ;;
                     --auth)
                         VLESS_AUTH="${2:-}"
@@ -9189,6 +9725,8 @@ Xray-OneClick 命令帮助
   ike xhttp install
   ike xhttp install --dry-run
   ike xhttp install --port 30005 --path /api/demo --finalmask on
+  ike xhttp install --finalmask on --finalmask-preset balanced
+  ike xhttp install --finalmask on --fm-packets tlshello --fm-length 80-160 --fm-delay 10-30 --fm-max-split 4-8
   ike xhttp install --port 30005 --path /api/demo --finalmask off
   ike xhttp install --port 30005 --path /api/demo --finalmask on --dry-run
   ike xhttp show
@@ -9208,6 +9746,7 @@ Xray-OneClick 命令帮助
   ike fullstack install
   ike fullstack install --dry-run
   ike fullstack install --port 30008 --path /api/test --sni www.abmindustriesgroup.com --finalmask on
+  ike fullstack install --finalmask on --finalmask-preset balanced
   ike fullstack install --port 30008 --path /api/test --sni www.abmindustriesgroup.com --finalmask off
   ike fullstack show
   ike fullstack remove
