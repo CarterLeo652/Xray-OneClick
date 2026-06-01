@@ -19,7 +19,7 @@ LEGACY_SHORTCUT_PATH="/usr/local/bin/sb"
 INSTALLER_DIR="/usr/local/share/ike"
 INSTALLER_PATH="${INSTALLER_DIR}/install.sh"
 SCRIPT_NAME="Xray-OneClick"
-SCRIPT_VERSION="1.1.3"
+SCRIPT_VERSION="1.1.4"
 REPO_URL="https://github.com/ike-sh/Xray-OneClick"
 RAW_SCRIPT_URL="https://raw.githubusercontent.com/ike-sh/Xray-OneClick/main/install.sh"
 XRAY_RELEASE_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
@@ -36,6 +36,7 @@ REALITY_PORT_MAX="50000"
 REALITY_DEFENDER_PORT_MIN="39000"
 REALITY_DEFENDER_PORT_MAX="49999"
 REALITY_FLOW_DEFAULT="xtls-rprx-vision"
+REALITY_FLOW_NONE="none"
 VLESS_XHTTP_FM_TAG="vless-enc-xhttp-finalmask-in"
 VLESS_XHTTP_FM_STATE_KEY="vless_xhttp_finalmask"
 VLESS_XHTTP_REALITY_TAG="vless+xhttp+reality"
@@ -2105,6 +2106,46 @@ ask_or_random_reality_sni() {
     done
 }
 
+normalize_reality_flow() {
+    local requested="${1:-$REALITY_FLOW_NONE}"
+
+    case "${requested,,}" in
+        vision | xtls-rprx-vision)
+            printf '%s' "$REALITY_FLOW_DEFAULT"
+            ;;
+        none | off | false | 0 | "")
+            printf '%s' "$REALITY_FLOW_NONE"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+flow_config_value() {
+    local flow="${1:-$REALITY_FLOW_NONE}"
+
+    flow="$(normalize_reality_flow "$flow")" || return 1
+    [[ "$flow" == "$REALITY_FLOW_DEFAULT" ]] && printf '%s' "$REALITY_FLOW_DEFAULT"
+}
+
+flow_state_value() {
+    local flow="${1:-$REALITY_FLOW_NONE}"
+
+    flow="$(normalize_reality_flow "$flow")" || return 1
+    printf '%s' "$flow"
+}
+
+print_reality_flow_none_warning() {
+    diag_warn "普通 Reality 推荐 Vision flow；关闭后可能影响性能和兼容性。"
+}
+
+print_advanced_flow_warning() {
+    diag_warn "你正在为高级组合启用 xtls-rprx-vision。"
+    diag_warn "XHTTP + REALITY / FullStack 与 Vision flow 可能存在客户端兼容风险。"
+    diag_warn "如果连接失败，请重新安装并使用 --flow none。"
+}
+
 configure_reality() {
     local mode="${1:-interactive}"
     local retry_port
@@ -2157,9 +2198,13 @@ configure_reality() {
     REALITY_SPIDER_X="/"
     REALITY_EMPTY_CLIENTS="${REALITY_EMPTY_CLIENTS:-false}"
     if [[ "$REALITY_EMPTY_CLIENTS" == "true" ]]; then
-        REALITY_FLOW=""
+        REALITY_FLOW="$REALITY_FLOW_NONE"
     else
-        REALITY_FLOW="${REALITY_FLOW:-$REALITY_FLOW_DEFAULT}"
+        REALITY_FLOW="$(normalize_reality_flow "${REALITY_FLOW:-$REALITY_FLOW_DEFAULT}")" || {
+            err "[Reality] --flow 仅支持 none 或 vision。"
+            return 1
+        }
+        [[ "$REALITY_FLOW" == "$REALITY_FLOW_NONE" ]] && print_reality_flow_none_warning
     fi
     generate_reality_keys || return 1
     generate_reality_short_ids || return 1
@@ -2173,6 +2218,7 @@ build_reality_share_link() {
     local server_name="${REALITY_SERVER_NAME:-}"
     local spider_x="${REALITY_SPIDER_X:-/}"
     local flow="$REALITY_FLOW_DEFAULT"
+    local flow_link=""
     local host link_port endpoint_pair
     local pbk_uri sni_uri sid_uri spx_uri flow_uri name_uri
 
@@ -2189,18 +2235,20 @@ build_reality_share_link() {
     fi
 
     [[ -n "$port" && -n "$uuid" && -n "$public_key" && -n "$short_id" && -n "$server_name" ]] || return 1
+    flow="$(flow_state_value "$flow")" || return 1
+    flow_link="$(flow_config_value "$flow" || true)"
     endpoint_pair="$(link_endpoint_for_tag "$port" "$REALITY_TAG" "$REALITY_STATE_KEY")"
     IFS=$'\t' read -r host link_port <<<"$endpoint_pair"
     pbk_uri="$(url_encode "$public_key")"
     sni_uri="$(url_encode "$server_name")"
     sid_uri="$(url_encode "$short_id")"
     spx_uri="$(url_encode "$spider_x")"
-    flow_uri="$(url_encode "$flow")"
+    flow_uri="$(url_encode "$flow_link")"
     name_uri="$(url_encode "Xray-Reality")"
 
     printf 'vless://%s@%s:%s?type=tcp&security=reality&pbk=%s&fp=chrome&sni=%s&sid=%s' \
         "$uuid" "$host" "$link_port" "$pbk_uri" "$sni_uri" "$sid_uri"
-    [[ -n "$flow" ]] && printf '&flow=%s' "$flow_uri"
+    [[ -n "$flow_link" ]] && printf '&flow=%s' "$flow_uri"
     printf '&spx=%s#%s' "$spx_uri" "$name_uri"
 }
 
@@ -2210,7 +2258,7 @@ state_set_reality() {
     local hash32
 
     flow="$REALITY_FLOW_DEFAULT"
-    [[ ${REALITY_FLOW+x} ]] && flow="$REALITY_FLOW"
+    [[ ${REALITY_FLOW+x} ]] && flow="$(flow_state_value "$REALITY_FLOW")"
     hash32="${REALITY_X25519_HASH32:-}"
     link="$(build_reality_share_link || true)"
     timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -2337,7 +2385,8 @@ install_reality() {
     fi
 
     flow="$REALITY_FLOW_DEFAULT"
-    [[ ${REALITY_FLOW+x} ]] && flow="$REALITY_FLOW"
+    [[ ${REALITY_FLOW+x} ]] && flow="$(flow_state_value "$REALITY_FLOW")"
+    flow="$(flow_config_value "$flow" || true)"
     if [[ "${REALITY_EMPTY_CLIENTS:-false}" == "true" ]]; then
         clients_json='[]'
     elif [[ -n "$flow" ]]; then
@@ -3583,6 +3632,7 @@ print_advanced_compat_hint() {
             echo "    7. SS2022 / SOCKS5"
             ;;
     esac
+    echo "  - 该高级组合默认不启用 Vision flow；如需实验，可使用 --flow vision。"
     echo "  - privateKey 是服务端字段，不要填入客户端，也不要泄露。"
     echo "  - publicKey/pbk 是客户端字段。"
 }
@@ -3629,6 +3679,21 @@ configure_advanced_profile() {
             return 1
         fi
     fi
+
+    if [[ "$mode" == "interactive" ]]; then
+        read -r -p "启用 Vision flow? [y/N]: " input
+        case "${input,,}" in
+            y | yes) ADVANCED_FLOW="$REALITY_FLOW_DEFAULT" ;;
+            *) ADVANCED_FLOW="$REALITY_FLOW_NONE" ;;
+        esac
+    else
+        ADVANCED_FLOW="${ADVANCED_FLOW:-$REALITY_FLOW_NONE}"
+    fi
+    ADVANCED_FLOW="$(normalize_reality_flow "$ADVANCED_FLOW")" || {
+        err "[高级组合] --flow 仅支持 none 或 vision。"
+        return 1
+    }
+    [[ "$ADVANCED_FLOW" == "$REALITY_FLOW_DEFAULT" ]] && print_advanced_flow_warning
 
     ADVANCED_UUID="$(generate_uuid)" || {
         err "[高级组合] UUID 生成失败。"
@@ -3705,8 +3770,8 @@ configure_advanced_profile() {
 
 build_advanced_share_link() {
     local kind="$1"
-    local state_key port uuid path encryption public_key short_id server_name spider_x fm_enabled fm_json
-    local endpoint_pair host link_port name network path_uri pbk_uri sni_uri sid_uri spx_uri enc_uri fm_uri name_uri
+    local state_key port uuid path encryption public_key short_id server_name spider_x fm_enabled fm_json flow flow_link
+    local endpoint_pair host link_port name network path_uri pbk_uri sni_uri sid_uri spx_uri enc_uri fm_uri flow_uri name_uri
 
     state_key="$(advanced_profile_state_key "$kind")" || return 1
     network="$(advanced_profile_network "$kind")" || return 1
@@ -3720,6 +3785,7 @@ build_advanced_share_link() {
     spider_x="${ADVANCED_SPIDER_X:-/}"
     fm_enabled="${ADVANCED_FINALMASK_ENABLED:-false}"
     fm_json="${ADVANCED_FINALMASK_JSON:-}"
+    flow="${ADVANCED_FLOW:-$REALITY_FLOW_NONE}"
 
     if [[ -z "$port" && -f "$STATE_FILE" ]]; then
         port="$(jq -r ".${state_key}.port // empty" "$STATE_FILE" 2>/dev/null)"
@@ -3732,9 +3798,12 @@ build_advanced_share_link() {
         spider_x="$(jq -r ".${state_key}.spider_x // \"/\"" "$STATE_FILE" 2>/dev/null)"
         fm_enabled="$(jq -r ".${state_key}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
         fm_json="$(jq -c ".${state_key}.finalmask_json // empty" "$STATE_FILE" 2>/dev/null)"
+        flow="$(jq -r ".${state_key}.flow // \"$REALITY_FLOW_NONE\"" "$STATE_FILE" 2>/dev/null)"
     fi
 
     [[ -n "$port" && -n "$uuid" && -n "$public_key" && -n "$short_id" && -n "$server_name" ]] || return 1
+    flow="$(flow_state_value "$flow")" || return 1
+    flow_link="$(flow_config_value "$flow" || true)"
     if advanced_profile_has_xhttp "$kind"; then
         [[ -n "$path" ]] || return 1
     fi
@@ -3749,6 +3818,7 @@ build_advanced_share_link() {
     sni_uri="$(url_encode "$server_name")"
     sid_uri="$(url_encode "$short_id")"
     spx_uri="$(url_encode "$spider_x")"
+    flow_uri="$(url_encode "$flow_link")"
     name_uri="$(url_encode "$name")"
 
     printf 'vless://%s@%s:%s?type=%s&security=reality' "$uuid" "$host" "$link_port" "$network"
@@ -3757,6 +3827,7 @@ build_advanced_share_link() {
         printf '&path=%s' "$path_uri"
     fi
     printf '&pbk=%s&fp=chrome&sni=%s&sid=%s&spx=%s' "$pbk_uri" "$sni_uri" "$sid_uri" "$spx_uri"
+    [[ -n "$flow_link" ]] && printf '&flow=%s' "$flow_uri"
     if advanced_profile_has_encryption "$kind"; then
         enc_uri="$(url_encode "$encryption")"
         printf '&encryption=%s' "$enc_uri"
@@ -3772,12 +3843,13 @@ state_set_advanced_profile() {
     init_state
     local kind="$1"
     local state_key tmp link timestamp finalmask_json hash32
-    local finalmask_mode finalmask_preset finalmask_summary
+    local finalmask_mode finalmask_preset finalmask_summary flow
 
     state_key="$(advanced_profile_state_key "$kind")" || return 1
     link="$(build_advanced_share_link "$kind" || true)"
     timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     hash32="${REALITY_X25519_HASH32:-}"
+    flow="$(flow_state_value "${ADVANCED_FLOW:-$REALITY_FLOW_NONE}")" || return 1
     finalmask_json="null"
     finalmask_mode="${ADVANCED_FINALMASK_MODE:-off}"
     finalmask_preset="${ADVANCED_FINALMASK_PRESET:-none}"
@@ -3803,6 +3875,7 @@ state_set_advanced_profile() {
         --argjson short_ids "$REALITY_SHORT_IDS_JSON" \
         --arg default_short_id "$REALITY_DEFAULT_SHORT_ID" \
         --arg server_name "$ADVANCED_SERVER_NAME" \
+        --arg flow "$flow" \
         --arg decryption "${VLESS_DECRYPTION:-}" \
         --arg encryption "${VLESS_ENCRYPTION:-}" \
         --arg has_encryption "$(advanced_profile_has_encryption "$kind" && printf true || printf false)" \
@@ -3829,6 +3902,7 @@ state_set_advanced_profile() {
           "short_ids": $short_ids,
           "default_short_id": $default_short_id,
           "server_name": $server_name,
+          "flow": $flow,
           "listen_scope": $listen_scope,
           "spider_x": env.ADVANCED_SPIDER_X,
           "created_at": $created_at,
@@ -3869,6 +3943,7 @@ print_advanced_dry_run() {
     advanced_profile_has_xhttp "$kind" && echo "Path: ${ADVANCED_PATH}"
     echo "SNI: ${ADVANCED_SERVER_NAME}"
     echo "REALITY target: ${ADVANCED_SERVER_NAME}:443"
+    echo "Flow: ${ADVANCED_FLOW:-$REALITY_FLOW_NONE}"
     echo "ShortID: $(mask_value "$REALITY_DEFAULT_SHORT_ID" 2)"
     echo "PublicKey: $(mask_value "$REALITY_PUBLIC_KEY" 6)"
     advanced_profile_has_encryption "$kind" && echo "VLESS Encryption: $(mask_value "$VLESS_ENCRYPTION" 8)"
@@ -3888,7 +3963,7 @@ print_advanced_dry_run() {
 
 install_advanced_profile() {
     local kind="$1"
-    local tag name tmp config_source base_tmp network finalmask_json
+    local tag name tmp config_source base_tmp network finalmask_json flow
 
     tag="$(advanced_profile_tag "$kind")" || return 1
     name="$(advanced_profile_name "$kind")" || return 1
@@ -3910,6 +3985,7 @@ install_advanced_profile() {
     if advanced_profile_has_finalmask "$kind" && [[ "$ADVANCED_FINALMASK_ENABLED" == "true" ]]; then
         finalmask_json="$ADVANCED_FINALMASK_JSON"
     fi
+    flow="$(flow_config_value "${ADVANCED_FLOW:-$REALITY_FLOW_NONE}" || true)"
 
     tmp="$(mktemp)" || return 1
     if ! MSYS2_ENV_CONV_EXCL="*" ADVANCED_XHTTP_PATH="${ADVANCED_PATH:-}" ADVANCED_SPIDER_X="${ADVANCED_SPIDER_X:-/}" jq --arg tag "$tag" \
@@ -3918,6 +3994,7 @@ install_advanced_profile() {
         --arg network "$network" \
         --arg sni "$ADVANCED_SERVER_NAME" \
         --arg private_key "$REALITY_PRIVATE_KEY" \
+        --arg flow "$flow" \
         --argjson short_ids "$REALITY_SHORT_IDS_JSON" \
         --arg decryption "${VLESS_DECRYPTION:-}" \
         --arg has_encryption "$(advanced_profile_has_encryption "$kind" && printf true || printf false)" \
@@ -3932,10 +4009,10 @@ install_advanced_profile() {
           "protocol": "vless",
           "settings": {
             "clients": [
-              {
+              ({
                 "id": $uuid,
                 "email": "advanced@xray"
-              }
+              } | if $flow != "" then .flow = $flow else . end)
             ],
             "decryption": (if $has_encryption == "true" then $decryption else "none" end)
           },
@@ -4000,7 +4077,7 @@ install_advanced_profile() {
 print_advanced_profile_result() {
     local kind="$1"
     local missing_mode="${2:-skip}"
-    local state_key state_exists link port uuid path encryption server_name public_key short_id spider_x fm_enabled fm_json endpoint_pair
+    local state_key state_exists link port uuid path encryption server_name public_key short_id spider_x fm_enabled fm_json endpoint_pair flow
     local fm_mode fm_preset fm_summary
     local address link_port name transport
 
@@ -4026,6 +4103,7 @@ print_advanced_profile_result() {
     public_key="$(jq -r ".${state_key}.public_key // empty" "$STATE_FILE" 2>/dev/null)"
     short_id="$(jq -r ".${state_key}.default_short_id // empty" "$STATE_FILE" 2>/dev/null)"
     spider_x="$(jq -r ".${state_key}.spider_x // \"/\"" "$STATE_FILE" 2>/dev/null)"
+    flow="$(jq -r ".${state_key}.flow // \"$REALITY_FLOW_NONE\"" "$STATE_FILE" 2>/dev/null)"
     fm_enabled="$(jq -r ".${state_key}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
     fm_mode="$(jq -r ".${state_key}.finalmask_mode // \"off\"" "$STATE_FILE" 2>/dev/null)"
     fm_preset="$(jq -r ".${state_key}.finalmask_preset // \"none\"" "$STATE_FILE" 2>/dev/null)"
@@ -4038,6 +4116,7 @@ print_advanced_profile_result() {
     echo -e "入口端口: ${port}"
     advanced_profile_has_xhttp "$kind" && echo -e "Path: ${path}"
     echo -e "REALITY target: ${server_name}:443"
+    echo -e "Flow: ${flow}"
     advanced_profile_has_finalmask "$kind" && echo -e "FinalMask: $([[ "$fm_enabled" == "true" ]] && printf on || printf 'off（未启用 FinalMask）')"
     if advanced_profile_has_finalmask "$kind"; then
         echo -e "FinalMask 模式: ${fm_mode}"
@@ -4058,6 +4137,7 @@ print_advanced_profile_result() {
     echo "  Address: ${address}"
     echo "  Port: ${link_port}"
     echo "  UUID: ${uuid}"
+    echo "  Flow: ${flow}"
     advanced_profile_has_xhttp "$kind" && echo "  Path: ${path}"
     echo "  SNI: ${server_name}"
     echo "  PublicKey: ${public_key} (客户端字段)"
@@ -8286,7 +8366,7 @@ doctor_reality_output() {
 }
 
 doctor_reality() {
-    local r_in d_in port defender_port sni flow dest short_count
+    local r_in d_in port defender_port sni flow dest short_count state_flow state_link link_has_flow
 
     echo -e "\n${YELLOW}Reality 诊断${PLAIN}"
     echo "----------------------------------------"
@@ -8313,9 +8393,20 @@ doctor_reality() {
     if [[ "$flow" == "$REALITY_FLOW_DEFAULT" ]]; then
         diag_ok "Reality flow 一致：${REALITY_FLOW_DEFAULT}"
     elif [[ -z "$flow" ]]; then
-        diag_warn "旧 Reality 配置缺少 flow，建议重新执行 ike reality install。"
+        diag_warn "普通 VLESS TCP REALITY 缺少 Vision flow，建议重新执行 ike reality install 或运行 migrate。"
     else
         diag_fail "Reality flow 异常: ${flow}"
+    fi
+    if [[ -f "$STATE_FILE" ]]; then
+        state_flow="$(jq -r ".${REALITY_STATE_KEY}.flow // empty" "$STATE_FILE" 2>/dev/null)"
+        state_link="$(jq -r ".${REALITY_STATE_KEY}.link // empty" "$STATE_FILE" 2>/dev/null)"
+        link_has_flow="false"
+        [[ "$state_link" == *"flow=${REALITY_FLOW_DEFAULT}"* ]] && link_has_flow="true"
+        if [[ "$flow" == "$REALITY_FLOW_DEFAULT" && "$state_flow" == "$REALITY_FLOW_DEFAULT" && "$link_has_flow" == "true" ]]; then
+            diag_ok "Reality flow 在 config/state/link 中一致"
+        else
+            diag_warn "Reality flow 在 config/state/link 中不完全一致，建议运行 ike migrate 或重新安装 Reality。"
+        fi
     fi
     echo "$r_in" | jq -e '(.streamSettings.realitySettings.privateKey // "") != ""' >/dev/null && diag_ok "Reality privateKey 已写入服务端配置（默认不输出值）" || diag_fail "Reality privateKey 缺失"
     [[ -n "$sni" ]] && diag_ok "Reality serverNames 已配置" || diag_fail "Reality serverNames 缺失"
@@ -8373,6 +8464,7 @@ doctor_xhttp() {
 doctor_advanced_profile() {
     local kind="$1"
     local tag state_key name network in path state_link config_has_fm state_enabled fm port
+    local config_flow state_flow link_has_flow
 
     tag="$(advanced_profile_tag "$kind")" || return 1
     state_key="$(advanced_profile_state_key "$kind")" || return 1
@@ -8398,6 +8490,8 @@ doctor_advanced_profile() {
         diag_ok "REALITY target/serverNames 已配置" ||
         diag_fail "REALITY target/serverNames 配置异常"
     echo "$in" | jq -e '(.streamSettings.realitySettings.shortIds | length) == 8' >/dev/null && diag_ok "shortIds 数量为 8" || diag_warn "shortIds 数量不是 8"
+    config_flow="$(echo "$in" | jq -r '.settings.clients[0].flow // "none"')"
+    [[ -n "$config_flow" ]] || config_flow="$REALITY_FLOW_NONE"
 
     if advanced_profile_has_xhttp "$kind"; then
         path="$(echo "$in" | jq -r '.streamSettings.xhttpSettings.path // empty')"
@@ -8414,10 +8508,24 @@ doctor_advanced_profile() {
             diag_ok "state 字段完整" ||
             diag_warn "state 字段不完整"
         state_link="$(jq -r ".${state_key}.link // empty" "$STATE_FILE" 2>/dev/null)"
+        state_flow="$(jq -r ".${state_key}.flow // \"$REALITY_FLOW_NONE\"" "$STATE_FILE" 2>/dev/null)"
         [[ "$state_link" == *"security=reality"* && "$state_link" == *"pbk="* && "$state_link" == *"sid="* ]] && diag_ok "分享链接包含 REALITY 必要参数" || diag_warn "分享链接缺少部分 REALITY 参数"
     else
         diag_warn "installer-state.json 不存在"
         state_link=""
+        state_flow="$REALITY_FLOW_NONE"
+    fi
+    link_has_flow="false"
+    [[ "$state_link" == *"flow=${REALITY_FLOW_DEFAULT}"* ]] && link_has_flow="true"
+    if [[ "$state_flow" == "$REALITY_FLOW_DEFAULT" || "$config_flow" == "$REALITY_FLOW_DEFAULT" || "$link_has_flow" == "true" ]]; then
+        if [[ "$state_flow" == "$REALITY_FLOW_DEFAULT" && "$config_flow" == "$REALITY_FLOW_DEFAULT" && "$link_has_flow" == "true" ]]; then
+            diag_ok "Vision flow 已启用且 config/state/link 一致"
+        else
+            diag_fail "Vision flow 配置不一致，请重新执行 ike ${kind} install --flow vision 或 --flow none"
+        fi
+        diag_warn "高级组合启用 Vision flow 可能存在客户端兼容风险。"
+    else
+        diag_ok "Vision flow 未启用（高级组合默认）"
     fi
     if advanced_profile_has_finalmask "$kind"; then
         state_enabled="$(jq -r ".${state_key}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
@@ -8733,20 +8841,20 @@ render_export_report() {
     echo
     echo "高级协议组合摘要:"
     if inbound_exists "$VLESS_XHTTP_REALITY_TAG"; then
-        jq -r --arg tag "$VLESS_XHTTP_REALITY_TAG" '.inbounds[]? | select(.tag == $tag) | "  XHTTP-Reality port=\(.port) path=\(.streamSettings.xhttpSettings.path // "") sni=\(.streamSettings.realitySettings.serverNames[0] // "")"' "$CONFIG_FILE"
-        jq -r ".${VLESS_XHTTP_REALITY_STATE_KEY} // {} | \"    publicKey=\(.public_key // \"\") shortId=\(.default_short_id // \"\")\"" "$STATE_FILE" 2>/dev/null
+        jq -r --arg tag "$VLESS_XHTTP_REALITY_TAG" '.inbounds[]? | select(.tag == $tag) | "  XHTTP-Reality port=\(.port) path=\(.streamSettings.xhttpSettings.path // "") sni=\(.streamSettings.realitySettings.serverNames[0] // "") flow=\(.settings.clients[0].flow // "none")"' "$CONFIG_FILE"
+        jq -r ".${VLESS_XHTTP_REALITY_STATE_KEY} // {} | \"    publicKey=\(.public_key // \"\") shortId=\(.default_short_id // \"\") flow=\(.flow // \"none\")\"" "$STATE_FILE" 2>/dev/null
     else
         echo "  XHTTP-Reality: 未安装"
     fi
     if inbound_exists "$VLESS_ENC_REALITY_TAG"; then
-        jq -r --arg tag "$VLESS_ENC_REALITY_TAG" '.inbounds[]? | select(.tag == $tag) | "  Enc-Reality port=\(.port) sni=\(.streamSettings.realitySettings.serverNames[0] // "")"' "$CONFIG_FILE"
-        jq -r ".${VLESS_ENC_REALITY_STATE_KEY} // {} | \"    publicKey=\(.public_key // \"\") shortId=\(.default_short_id // \"\")\"" "$STATE_FILE" 2>/dev/null
+        jq -r --arg tag "$VLESS_ENC_REALITY_TAG" '.inbounds[]? | select(.tag == $tag) | "  Enc-Reality port=\(.port) sni=\(.streamSettings.realitySettings.serverNames[0] // "") flow=\(.settings.clients[0].flow // "none")"' "$CONFIG_FILE"
+        jq -r ".${VLESS_ENC_REALITY_STATE_KEY} // {} | \"    publicKey=\(.public_key // \"\") shortId=\(.default_short_id // \"\") flow=\(.flow // \"none\")\"" "$STATE_FILE" 2>/dev/null
     else
         echo "  Enc-Reality: 未安装"
     fi
     if inbound_exists "$VLESS_FULLSTACK_TAG"; then
-        jq -r --arg tag "$VLESS_FULLSTACK_TAG" '.inbounds[]? | select(.tag == $tag) | "  FullStack port=\(.port) path=\(.streamSettings.xhttpSettings.path // "") sni=\(.streamSettings.realitySettings.serverNames[0] // "") finalmask=\(.streamSettings | has("finalmask"))"' "$CONFIG_FILE"
-        jq -r ".${VLESS_FULLSTACK_STATE_KEY} // {} | \"    publicKey=\(.public_key // \"\") shortId=\(.default_short_id // \"\") finalmask_enabled=\(.finalmask_enabled // false) mode=\(.finalmask_mode // \"off\") preset=\(.finalmask_preset // \"none\") summary=\(.finalmask_summary // \"\")\"" "$STATE_FILE" 2>/dev/null
+        jq -r --arg tag "$VLESS_FULLSTACK_TAG" '.inbounds[]? | select(.tag == $tag) | "  FullStack port=\(.port) path=\(.streamSettings.xhttpSettings.path // "") sni=\(.streamSettings.realitySettings.serverNames[0] // "") flow=\(.settings.clients[0].flow // "none") finalmask=\(.streamSettings | has("finalmask"))"' "$CONFIG_FILE"
+        jq -r ".${VLESS_FULLSTACK_STATE_KEY} // {} | \"    publicKey=\(.public_key // \"\") shortId=\(.default_short_id // \"\") flow=\(.flow // \"none\") finalmask_enabled=\(.finalmask_enabled // false) mode=\(.finalmask_mode // \"off\") preset=\(.finalmask_preset // \"none\") summary=\(.finalmask_summary // \"\")\"" "$STATE_FILE" 2>/dev/null
     else
         echo "  FullStack: 未安装"
     fi
@@ -8915,6 +9023,7 @@ migrate_old_state() {
     local tmp changed="false" reality_link="" xhttp_link=""
     local old_reality_flow old_reality_link old_xhttp_enabled old_xhttp_link
     local inferred_reality_flow="" inferred_xhttp_enabled="" inferred_xhttp_finalmask_json="null"
+    local inferred_xhttp_reality_flow="" inferred_enc_reality_flow="" inferred_fullstack_flow=""
     local old_xhttp_finalmask_json
     local ss_scope="" vless_scope="" reality_scope="" xhttp_scope="" socks_scope=""
     local xhttp_reality_scope="" enc_reality_scope="" fullstack_scope=""
@@ -8979,6 +9088,22 @@ migrate_old_state() {
         fi
     fi
 
+    if jq -e ".${VLESS_XHTTP_REALITY_STATE_KEY}? and ((.${VLESS_XHTTP_REALITY_STATE_KEY}.flow // \"\") == \"\")" "$STATE_FILE" >/dev/null 2>&1; then
+        inferred_xhttp_reality_flow="$REALITY_FLOW_NONE"
+        diag_info "将补齐 vless_xhttp_reality.flow=none"
+        changed="true"
+    fi
+    if jq -e ".${VLESS_ENC_REALITY_STATE_KEY}? and ((.${VLESS_ENC_REALITY_STATE_KEY}.flow // \"\") == \"\")" "$STATE_FILE" >/dev/null 2>&1; then
+        inferred_enc_reality_flow="$REALITY_FLOW_NONE"
+        diag_info "将补齐 vless_enc_reality.flow=none"
+        changed="true"
+    fi
+    if jq -e ".${VLESS_FULLSTACK_STATE_KEY}? and ((.${VLESS_FULLSTACK_STATE_KEY}.flow // \"\") == \"\")" "$STATE_FILE" >/dev/null 2>&1; then
+        inferred_fullstack_flow="$REALITY_FLOW_NONE"
+        diag_info "将补齐 vless_fullstack.flow=none"
+        changed="true"
+    fi
+
     if [[ -f "$CONFIG_FILE" ]]; then
         if jq -e '.ss2022? and ((.ss2022.listen_scope // "") == "")' "$STATE_FILE" >/dev/null 2>&1; then
             ss_scope="$(config_inbound_listen_scope "$SS_TAG")"
@@ -9016,15 +9141,9 @@ migrate_old_state() {
 
     if jq -e ".${REALITY_STATE_KEY}" "$STATE_FILE" >/dev/null 2>&1; then
         if [[ -z "$old_reality_flow" ]]; then
-            if [[ -f "$CONFIG_FILE" ]]; then
-                inferred_reality_flow="$(jq -r --arg tag "$REALITY_TAG" '.inbounds[]? | select(.tag == $tag).settings.clients[0].flow // empty' "$CONFIG_FILE" 2>/dev/null)"
-            fi
-            if [[ -n "$inferred_reality_flow" ]]; then
-                diag_info "将从 config 补齐 vless_reality.flow"
-                changed="true"
-            else
-                diag_warn "无法推导 vless_reality.flow；旧配置可能缺少 Vision flow，建议重新执行 ike reality install"
-            fi
+            inferred_reality_flow="$REALITY_FLOW_DEFAULT"
+            diag_info "将补齐 vless_reality.flow=${REALITY_FLOW_DEFAULT}"
+            changed="true"
         fi
         if [[ -z "$old_reality_link" ]]; then
             REALITY_PORT="$(jq -r ".${REALITY_STATE_KEY}.port // empty" "$STATE_FILE")"
@@ -9114,12 +9233,20 @@ migrate_old_state() {
         --arg fullstack_fm_mode "$fullstack_fm_mode" \
         --arg fullstack_fm_preset "$fullstack_fm_preset" \
         --arg fullstack_fm_summary "$fullstack_fm_summary" \
+        --arg xhttp_reality_flow "$inferred_xhttp_reality_flow" \
+        --arg enc_reality_flow "$inferred_enc_reality_flow" \
+        --arg fullstack_flow "$inferred_fullstack_flow" \
         --arg xhttp_reality_key "$VLESS_XHTTP_REALITY_STATE_KEY" \
         --arg enc_reality_key "$VLESS_ENC_REALITY_STATE_KEY" \
         --arg fullstack_key "$VLESS_FULLSTACK_STATE_KEY" '
         def fill_scope($key; $scope):
           if .[$key]? and ((.[$key].listen_scope // "") == "") and $scope != "" and $scope != "unknown"
           then .[$key].listen_scope = $scope
+          else .
+          end;
+        def fill_flow($key; $flow):
+          if .[$key]? and ((.[$key].flow // "") == "") and $flow != ""
+          then .[$key].flow = $flow
           else .
           end;
         if .[$reality_key]? then
@@ -9142,6 +9269,9 @@ migrate_old_state() {
         fill_scope($xhttp_reality_key; $xhttp_reality_scope) |
         fill_scope($enc_reality_key; $enc_reality_scope) |
         fill_scope($fullstack_key; $fullstack_scope) |
+        fill_flow($xhttp_reality_key; $xhttp_reality_flow) |
+        fill_flow($enc_reality_key; $enc_reality_flow) |
+        fill_flow($fullstack_key; $fullstack_flow) |
         (if .[$fullstack_key]? then
           (if ((.[$fullstack_key].finalmask_mode // "") == "" and $fullstack_fm_mode != "") then .[$fullstack_key].finalmask_mode = $fullstack_fm_mode else . end) |
           (if ((.[$fullstack_key].finalmask_preset // "") == "" and $fullstack_fm_preset != "") then .[$fullstack_key].finalmask_preset = $fullstack_fm_preset else . end) |
@@ -9281,7 +9411,7 @@ run_uninstall_command() {
 show_reality_usage() {
     cat <<'EOF'
 用法:
-  ike reality install [--port PORT] [--defender-port PORT] [--sni DOMAIN] [--dry-run] [--yes] [--empty-clients]
+  ike reality install [--port PORT] [--defender-port PORT] [--sni DOMAIN] [--flow vision|none] [--dry-run] [--yes] [--empty-clients]
   ike reality show
   ike reality remove
   ike view reality
@@ -9326,6 +9456,13 @@ run_reality_command() {
                         ;;
                     --sni)
                         REALITY_SNI_REQUEST="${2:-}"
+                        shift 2
+                        ;;
+                    --flow)
+                        if [[ -z "${2:-}" ]] || ! REALITY_FLOW="$(normalize_reality_flow "$2")"; then
+                            err "[Reality] --flow 仅支持 none 或 vision。"
+                            return 1
+                        fi
                         shift 2
                         ;;
                     --empty-clients)
@@ -9490,7 +9627,7 @@ show_advanced_profile_usage() {
         xhttp-reality)
             cat <<'EOF'
 用法:
-  ike xhttp-reality install [--port PORT] [--path /path] [--sni DOMAIN] [--dry-run] [--yes]
+  ike xhttp-reality install [--port PORT] [--path /path] [--sni DOMAIN] [--flow none|vision] [--dry-run] [--yes]
   ike xhttp-reality show
   ike xhttp-reality remove
   ike view xhttp-reality
@@ -9499,7 +9636,7 @@ EOF
         enc-reality)
             cat <<'EOF'
 用法:
-  ike enc-reality install [--port PORT] [--sni DOMAIN] [--dry-run] [--yes] [--auth x25519|mlkem768]
+  ike enc-reality install [--port PORT] [--sni DOMAIN] [--flow none|vision] [--dry-run] [--yes] [--auth x25519|mlkem768]
   ike enc-reality show
   ike enc-reality remove
   ike view enc-reality
@@ -9508,7 +9645,7 @@ EOF
         fullstack)
             cat <<'EOF'
 用法:
-  ike fullstack install [--port PORT] [--path /path] [--sni DOMAIN] [--finalmask on|off] [--finalmask-preset conservative|balanced|aggressive] [--fm-length 100-200] [--fm-delay 10-20] [--fm-max-split 3-6] [--finalmask-json JSON] [--dry-run] [--yes] [--auth x25519|mlkem768]
+  ike fullstack install [--port PORT] [--path /path] [--sni DOMAIN] [--flow none|vision] [--finalmask on|off] [--finalmask-preset conservative|balanced|aggressive] [--fm-length 100-200] [--fm-delay 10-20] [--fm-max-split 3-6] [--finalmask-json JSON] [--dry-run] [--yes] [--auth x25519|mlkem768]
   ike fullstack show
   ike fullstack remove
   ike view fullstack
@@ -9532,6 +9669,7 @@ run_advanced_profile_command() {
             ADVANCED_SNI_REQUEST=""
             ADVANCED_FINALMASK_REQUEST="true"
             ADVANCED_FINALMASK_SPECIFIED="false"
+            ADVANCED_FLOW="$REALITY_FLOW_NONE"
             FINALMASK_PRESET_REQUEST=""
             FINALMASK_JSON_REQUEST=""
             FINALMASK_PACKETS_REQUEST=""
@@ -9558,6 +9696,13 @@ run_advanced_profile_command() {
                         ;;
                     --sni)
                         ADVANCED_SNI_REQUEST="${2:-}"
+                        shift 2
+                        ;;
+                    --flow)
+                        if [[ -z "${2:-}" ]] || ! ADVANCED_FLOW="$(normalize_reality_flow "$2")"; then
+                            err "[高级组合] --flow 仅支持 none 或 vision。"
+                            return 1
+                        fi
                         shift 2
                         ;;
                     --finalmask)
@@ -9736,17 +9881,20 @@ Xray-OneClick 命令帮助
   ike xhttp-reality install
   ike xhttp-reality install --dry-run
   ike xhttp-reality install --port 30006 --path /api/test --sni www.abmindustriesgroup.com
+  ike xhttp-reality install --flow vision
   ike xhttp-reality show
   ike xhttp-reality remove
   ike enc-reality install
   ike enc-reality install --dry-run
   ike enc-reality install --port 30007 --sni www.abmindustriesgroup.com
+  ike enc-reality install --flow vision
   ike enc-reality show
   ike enc-reality remove
   ike fullstack install
   ike fullstack install --dry-run
   ike fullstack install --port 30008 --path /api/test --sni www.abmindustriesgroup.com --finalmask on
   ike fullstack install --finalmask on --finalmask-preset balanced
+  ike fullstack install --flow vision --finalmask off
   ike fullstack install --port 30008 --path /api/test --sni www.abmindustriesgroup.com --finalmask off
   ike fullstack show
   ike fullstack remove

@@ -1,16 +1,16 @@
 # Xray-OneClick
 
-**Xray-OneClick 1.1.3**
+**Xray-OneClick 1.1.4**
 
 Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在 Debian / Ubuntu systemd 服务器上快速安装和维护个人 Xray 节点。
 
 脚本支持 Shadowsocks 2022、VLESS Encryption、VLESS TCP REALITY、VLESS Encryption + XHTTP + FinalMask、SOCKS5、Tunnel 中转管理，以及高级协议组合。默认带基础安全屏蔽、配置备份、服务诊断、配置导出、Xray-core 升级和安全卸载能力。
 
-当前版本：`1.1.3`
+当前版本：`1.1.4`
 
 状态：正式版
 
-说明：1.1.3 增强 FinalMask 参数配置能力，支持 conservative / balanced / aggressive 预设、自定义参数和原始 JSON。普通用户仍建议优先使用 VLESS TCP REALITY；高级组合和 FinalMask 需要较新的 Xray-core 与客户端核心。
+说明：1.1.4 收敛 Reality / Vision flow 行为。普通 VLESS TCP REALITY 默认使用 `xtls-rprx-vision`；高级 Reality 组合默认不启用 Vision flow，可按需用 `--flow vision` 实验开启。
 
 ## 功能特性
 
@@ -234,6 +234,34 @@ Reality 使用 `xray x25519` 生成密钥。新版 Xray 可能输出 `PrivateKey
 
 `privateKey` 是服务端敏感字段，不需要填到客户端；客户端需要的是 `publicKey/pbk`。
 
+## Vision flow 说明
+
+普通 VLESS TCP REALITY 默认使用 `xtls-rprx-vision`，这是主力 Reality 的推荐配置。脚本会同时把 flow 写入服务端 `clients[0].flow`、客户端分享链接和 state，避免出现链接与服务端配置不一致。
+
+高级 Reality 组合默认不启用 Vision flow：
+
+- VLESS XHTTP + REALITY
+- VLESS Encryption + REALITY
+- VLESS Encryption + XHTTP + REALITY + FinalMask
+
+原因是 XHTTP、VLESS Encryption、FinalMask 与 Vision flow 叠加后对客户端核心要求更高。高级用户可以实验开启：
+
+```bash
+ike xhttp-reality install --flow vision
+ike enc-reality install --flow vision
+ike fullstack install --flow vision
+```
+
+如果启用后客户端连接失败，请改回：
+
+```bash
+ike xhttp-reality install --flow none
+ike enc-reality install --flow none
+ike fullstack install --flow none
+```
+
+`ike xhttp install` 和普通 `ike vless encryption` 使用 `security=none`，不使用 Vision flow。
+
 排障命令：
 
 ```bash
@@ -365,6 +393,7 @@ FullStack 不作为普通用户默认推荐。如果 FullStack 不兼容，建�
 ```bash
 ike xhttp-reality install
 ike xhttp-reality install --port 30006 --path /api/test --sni www.abmindustriesgroup.com
+ike xhttp-reality install --flow vision
 ike xhttp-reality show
 ike doctor xhttp-reality
 ike smoke xhttp-reality --restart
@@ -376,7 +405,7 @@ ike xhttp-reality remove
 - Transport = XHTTP
 - Security = REALITY
 - REALITY target = `SNI:443`
-- 默认不写 Vision flow，减少 XHTTP + REALITY 的兼容风险
+- 默认不写 Vision flow，减少 XHTTP + REALITY 的兼容风险；需要实验时可加 `--flow vision`
 - 适合想测试 XHTTP 与 Reality 组合的用户
 
 ### VLESS Encryption + REALITY
@@ -386,6 +415,7 @@ ike xhttp-reality remove
 ```bash
 ike enc-reality install
 ike enc-reality install --port 30007 --sni www.abmindustriesgroup.com
+ike enc-reality install --flow vision
 ike enc-reality show
 ike doctor enc-reality
 ike smoke enc-reality --restart
@@ -397,7 +427,7 @@ ike enc-reality remove
 - Transport = TCP
 - Security = REALITY
 - 复用 `xray vlessenc` 生成 VLESS Encryption
-- 默认不写 Vision flow
+- 默认不写 Vision flow；需要实验时可加 `--flow vision`
 - 客户端需要同时支持 VLESS Encryption 与 REALITY
 - 不建议把它作为唯一节点，建议保留普通 Reality 作为备用
 
@@ -409,6 +439,7 @@ ike enc-reality remove
 ike fullstack install
 ike fullstack install --port 30008 --path /api/test --sni www.abmindustriesgroup.com --finalmask on
 ike fullstack install --port 30008 --path /api/test --sni www.abmindustriesgroup.com --finalmask on --finalmask-preset balanced
+ike fullstack install --flow vision --finalmask off
 ike fullstack install --port 30008 --path /api/test --sni www.abmindustriesgroup.com --finalmask off
 ike fullstack show
 ike doctor fullstack
@@ -423,6 +454,7 @@ ike fullstack remove
 - 复用 VLESS Encryption
 - 可选 FinalMask
 - 不使用 TLS 证书
+- 默认不写 Vision flow；需要实验时可加 `--flow vision`
 - 兼容性最挑客户端
 
 如果 FullStack 导入或连接失败，先尝试：

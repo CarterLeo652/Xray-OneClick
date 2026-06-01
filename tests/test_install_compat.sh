@@ -300,7 +300,7 @@ JSON
     assert_contains "$output" "ike migrate" "help missing migrate"
     assert_contains "$output" "ike fullstack install" "help missing fullstack"
     output="$(show_version)"
-    assert_contains "$output" "1.1.3" "version output mismatch"
+    assert_contains "$output" "1.1.4" "version output mismatch"
     cat >"$BIN_PATH" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$1" == "version" ]]; then
@@ -341,11 +341,9 @@ test_migrate_uninferable_warning() {
   }
 }
 JSON
-    output="$(run_migrate_command 2>&1)" || fail "migrate with uninferable fields should not fail"
-    assert_contains "$output" "无法推导 vless_reality.flow" "migrate missing uninferable warning"
-    if jq -e '.vless_reality.flow?' "$STATE_FILE" >/dev/null; then
-        fail "migrate wrote fake flow without config evidence"
-    fi
+    output="$(run_migrate_command 2>&1)" || fail "migrate with missing flow should not fail"
+    assert_contains "$output" "将补齐 vless_reality.flow=xtls-rprx-vision" "migrate missing reality flow fill message"
+    jq -e '.vless_reality.flow == "xtls-rprx-vision"' "$STATE_FILE" >/dev/null || fail "migrate did not fill reality flow default"
     cleanup_fixture
 }
 

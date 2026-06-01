@@ -406,6 +406,7 @@ set_inbound_listen() {
 set_advanced_vars() {
     local kind="$1"
     local finalmask="${2:-true}"
+    local flow="${3:-none}"
 
     case "$kind" in
         xhttp-reality)
@@ -426,6 +427,7 @@ set_advanced_vars() {
     ADVANCED_UUID="55555555-5555-4555-8555-555555555555"
     ADVANCED_SPIDER_X="/"
     ADVANCED_DRY_RUN="false"
+    ADVANCED_FLOW="$flow"
     ADVANCED_FINALMASK_ENABLED="$finalmask"
     ADVANCED_FINALMASK_JSON="$(default_finalmask_json)"
     REALITY_PRIVATE_KEY="reality-private-key"
@@ -445,8 +447,9 @@ set_advanced_vars() {
 install_advanced_fixture() {
     local kind="$1"
     local finalmask="${2:-true}"
+    local flow="${3:-none}"
 
-    set_advanced_vars "$kind" "$finalmask"
+    set_advanced_vars "$kind" "$finalmask" "$flow"
     install_advanced_profile "$kind" >/dev/null || fail "$kind install failed"
 }
 
@@ -800,9 +803,14 @@ test_migrate_infers_listen_scope() {
 
     setup_fixture
     tmp="$(mktemp)"
-    jq '.ss2022 = {"port":10001}' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
+    jq '.ss2022 = {"port":10001} |
+        .vless_reality = {"port":30004,"uuid":"22222222-2222-4222-8222-222222222222","public_key":"reality-public-key","default_short_id":"aa","server_name":"www.abmindustriesgroup.com","spider_x":"/"} |
+        .vless_xhttp_reality = {"port":30006} |
+        .vless_enc_reality = {"port":30007} |
+        .vless_fullstack = {"port":30008}' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
     migrate_old_state false >/dev/null || fail "migrate_old_state failed"
     assert_jq "$STATE_FILE" '.ss2022.listen_scope == "ipv4"' "migrate did not infer SS2022 listen_scope"
+    assert_jq "$STATE_FILE" '.vless_reality.flow == "xtls-rprx-vision" and .vless_xhttp_reality.flow == "none" and .vless_enc_reality.flow == "none" and .vless_fullstack.flow == "none"' "migrate did not fill flow defaults"
     cleanup_fixture
 }
 
@@ -1050,6 +1058,53 @@ test_advanced_profiles_write_and_links() {
     cleanup_fixture
 }
 
+test_reality_and_advanced_flow_modes() {
+    local output tmp
+
+    setup_fixture
+    install_reality_fixture
+    tmp="$(mktemp)"
+    jq --arg tag "$REALITY_TAG" 'del(.inbounds[]? | select(.tag == $tag).settings.clients[0].flow)' "$CONFIG_FILE" >"$tmp" && mv "$tmp" "$CONFIG_FILE"
+    tmp="$(mktemp)"
+    jq 'del(.vless_reality.flow)' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
+    output="$(doctor_reality 2>&1)"
+    assert_output_contains "$output" "缺少 Vision flow" "doctor reality did not warn about missing flow"
+    cleanup_fixture
+
+    setup_fixture
+    install_advanced_fixture "xhttp-reality"
+    assert_jq "$CONFIG_FILE" '(.inbounds[]? | select(.tag == "vless+xhttp+reality").settings.clients[0] | has("flow") | not)' "xhttp-reality default should not write flow"
+    assert_jq "$STATE_FILE" '.vless_xhttp_reality.flow == "none" and (.vless_xhttp_reality.link | contains("flow=") | not)' "xhttp-reality default flow state/link invalid"
+    install_advanced_fixture "enc-reality"
+    assert_jq "$CONFIG_FILE" '(.inbounds[]? | select(.tag == "vless+enc+reality").settings.clients[0] | has("flow") | not)' "enc-reality default should not write flow"
+    assert_jq "$STATE_FILE" '.vless_enc_reality.flow == "none" and (.vless_enc_reality.link | contains("flow=") | not)' "enc-reality default flow state/link invalid"
+    install_advanced_fixture "fullstack" "true"
+    assert_jq "$CONFIG_FILE" '(.inbounds[]? | select(.tag == "vless+enc+xhttp+reality+finalmask").settings.clients[0] | has("flow") | not)' "fullstack default should not write flow"
+    assert_jq "$STATE_FILE" '.vless_fullstack.flow == "none" and (.vless_fullstack.link | contains("flow=") | not)' "fullstack default flow state/link invalid"
+
+    install_advanced_fixture "xhttp-reality" "true" "vision"
+    assert_jq "$CONFIG_FILE" '(.inbounds[]? | select(.tag == "vless+xhttp+reality").settings.clients[0].flow) == "xtls-rprx-vision"' "xhttp-reality vision flow not written"
+    assert_jq "$STATE_FILE" '.vless_xhttp_reality.flow == "xtls-rprx-vision" and (.vless_xhttp_reality.link | contains("flow=xtls-rprx-vision"))' "xhttp-reality vision link/state invalid"
+    install_advanced_fixture "enc-reality" "true" "vision"
+    assert_jq "$CONFIG_FILE" '(.inbounds[]? | select(.tag == "vless+enc+reality").settings.clients[0].flow) == "xtls-rprx-vision"' "enc-reality vision flow not written"
+    assert_jq "$STATE_FILE" '.vless_enc_reality.flow == "xtls-rprx-vision" and (.vless_enc_reality.link | contains("flow=xtls-rprx-vision"))' "enc-reality vision link/state invalid"
+    install_advanced_fixture "fullstack" "true" "vision"
+    assert_jq "$CONFIG_FILE" '(.inbounds[]? | select(.tag == "vless+enc+xhttp+reality+finalmask").settings.clients[0].flow) == "xtls-rprx-vision"' "fullstack vision flow not written"
+    assert_jq "$STATE_FILE" '.vless_fullstack.flow == "xtls-rprx-vision" and (.vless_fullstack.link | contains("flow=xtls-rprx-vision")) and (.vless_fullstack.link | contains("fm="))' "fullstack vision link/state invalid"
+
+    output="$(print_advanced_profile_result "xhttp-reality" "show" 2>&1)"
+    assert_output_contains "$output" "Flow: xtls-rprx-vision" "advanced show missing vision flow"
+    output="$(doctor_advanced_profile "xhttp-reality" 2>&1)"
+    assert_output_contains "$output" "Vision flow 已启用且 config/state/link 一致" "advanced doctor missing vision consistency"
+
+    if run_advanced_profile_command "xhttp-reality" install --flow abc --dry-run >/dev/null 2>&1; then
+        fail "advanced install accepted invalid flow"
+    fi
+    install_xhttp_fixture "true"
+    assert_jq "$STATE_FILE" '.vless_xhttp_finalmask.link | contains("flow=") | not' "xhttp-finalmask should never include flow"
+    cleanup_fixture
+}
+
 test_advanced_remove_repeat_and_dry_run() {
     local before_config before_state after_config after_state output status
 
@@ -1220,6 +1275,7 @@ run_test test_doctor_smoke_and_export
 run_test test_show_output_compatibility_hints
 run_test test_failure_hints_do_not_update_state
 run_test test_advanced_profiles_write_and_links
+run_test test_reality_and_advanced_flow_modes
 run_test test_advanced_remove_repeat_and_dry_run
 run_test test_advanced_view_doctor_smoke_export
 run_test test_advanced_uninstalled_show_doctor_smoke_are_friendly
