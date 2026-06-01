@@ -19,7 +19,7 @@ LEGACY_SHORTCUT_PATH="/usr/local/bin/sb"
 INSTALLER_DIR="/usr/local/share/ike"
 INSTALLER_PATH="${INSTALLER_DIR}/install.sh"
 SCRIPT_NAME="Xray-OneClick"
-SCRIPT_VERSION="1.1.4"
+SCRIPT_VERSION="1.1.5"
 REPO_URL="https://github.com/ike-sh/Xray-OneClick"
 RAW_SCRIPT_URL="https://raw.githubusercontent.com/ike-sh/Xray-OneClick/main/install.sh"
 XRAY_RELEASE_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
@@ -807,7 +807,7 @@ detect_xray_feature_support() {
     fi
     diag_info "Xray 当前版本: $version"
     diag_info "Reality 通常需要较新的 Xray-core；最终以 xray run -test 和客户端实测为准。"
-    diag_info "XHTTP/FinalMask 仍是实验能力，建议保持 Xray-core 为最新版本。"
+    diag_info "XHTTP/FinalMask 属于高级兼容能力，建议保持 Xray-core 为最新版本。"
 }
 
 print_xray_version_summary() {
@@ -3617,7 +3617,7 @@ print_advanced_compat_hint() {
             echo "  - 如果客户端无法导入，建议退回普通 Reality 或 XHTTP-FinalMask off。"
             ;;
         enc-reality)
-            echo "  - VLESS Encryption + REALITY 是高级实验组合。"
+            echo "  - VLESS Encryption + REALITY 是高兼容要求组合。"
             echo "  - 如果客户端不支持 encryption + reality 同时导入，建议使用普通 Reality 或普通 VLESS Encryption。"
             ;;
         fullstack)
@@ -3632,7 +3632,7 @@ print_advanced_compat_hint() {
             echo "    7. SS2022 / SOCKS5"
             ;;
     esac
-    echo "  - 该高级组合默认不启用 Vision flow；如需实验，可使用 --flow vision。"
+    echo "  - 该高级组合默认不启用 Vision flow；如需开启，可使用 --flow vision。"
     echo "  - privateKey 是服务端字段，不要填入客户端，也不要泄露。"
     echo "  - publicKey/pbk 是客户端字段。"
 }
@@ -5028,7 +5028,7 @@ print_apply_failure_hint() {
 }
 
 print_finalmask_failure_hint() {
-    err "[建议] FinalMask 仍属实验能力；如校验或客户端导入失败，优先重试: ike xhttp install --finalmask off"
+    err "[建议] FinalMask 属于高级兼容功能；如校验或客户端导入失败，优先重试: ike xhttp install --finalmask off"
     err "[建议] 检查当前 Xray-core 版本是否支持所用 XHTTP/FinalMask schema。"
 }
 
@@ -5259,7 +5259,7 @@ forward_scenario_defaults() {
 
     case "$scenario" in
         map)
-            FORWARD_SCENARIO_TITLE="多端口落地组（portMap 实验 / fallback 多条 single）"
+            FORWARD_SCENARIO_TITLE="多端口落地组（portMap / fallback 多条 single）"
             FORWARD_SCENARIO_MODE="relay"
             FORWARD_SCENARIO_NETWORK="tcp,udp"
             FORWARD_SCENARIO_LOCK_NETWORK="true"
@@ -6951,7 +6951,7 @@ configure_tunnel_portmap_rule() {
     FORWARD_GROUP=""
     FORWARD_PORT_MAP_JSON="{}"
 
-    echo -e "\n${YELLOW}[Tunnel 中转] 多端口落地组（portMap 实验）${PLAIN}"
+    echo -e "\n${YELLOW}[Tunnel 中转] 多端口落地组（portMap）${PLAIN}"
     info "[提示] portMap 会优先生成单个 Tunnel inbound；如果 Xray 校验失败，会自动回退为多条 single Tunnel。"
     read -r -p "分组名称 (建议填写，例如 landing-us): " FORWARD_GROUP
     read -r -p "本机监听地址 (默认: 0.0.0.0): " FORWARD_LISTEN
@@ -7097,7 +7097,7 @@ configure_forward_menu() {
     while true; do
         echo -e "\n${YELLOW}[Tunnel 中转管理]${PLAIN}"
         echo " 1) 单端口落地中转（relay/tcp,udp）"
-        echo " 2) 多端口落地组（portMap 实验 / fallback 多条 single）"
+        echo " 2) 多端口落地组（portMap / fallback 多条 single）"
         echo " 3) 普通公网转发（safe/tcp）"
         echo " 4) 内网服务暴露（relay/tcp）"
         echo " 5) UDP 游戏/语音转发（safe 或 relay，可选 udp/tcp,udp）"
@@ -9834,6 +9834,7 @@ Xray-OneClick 命令帮助
   ike smoke xhttp-reality
   ike smoke enc-reality --restart
   ike smoke fullstack --restart
+  ike smoke all
   ike export report --output /root/xray-report.txt
   ike export clients --output /root/xray-clients.txt
   ike update
@@ -9843,6 +9844,7 @@ Xray-OneClick 命令帮助
   ike endpoint clear
   ike endpoint detect
   ike config path
+  ike config test
   ike config edit
   ike service status
   ike service install

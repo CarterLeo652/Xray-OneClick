@@ -1,16 +1,16 @@
 # Xray-OneClick
 
-**Xray-OneClick 1.1.4**
+**Xray-OneClick 1.1.5**
 
 Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在 Debian / Ubuntu systemd 服务器上快速安装和维护个人 Xray 节点。
 
 脚本支持 Shadowsocks 2022、VLESS Encryption、VLESS TCP REALITY、VLESS Encryption + XHTTP + FinalMask、SOCKS5、Tunnel 中转管理，以及高级协议组合。默认带基础安全屏蔽、配置备份、服务诊断、配置导出、Xray-core 升级和安全卸载能力。
 
-当前版本：`1.1.4`
+当前版本：`1.1.5`
 
 状态：正式版
 
-说明：1.1.4 收敛 Reality / Vision flow 行为。普通 VLESS TCP REALITY 默认使用 `xtls-rprx-vision`；高级 Reality 组合默认不启用 Vision flow，可按需用 `--flow vision` 实验开启。
+说明：1.1.5 是最终用户发布清理版。普通 VLESS TCP REALITY 默认使用 `xtls-rprx-vision`；高级 Reality 组合默认不启用 Vision flow，可按需用 `--flow vision` 试验开启。
 
 ## 功能特性
 
@@ -136,6 +136,8 @@ ike xray upgrade --restart
 
 ```bash
 ike view
+ike config test
+ike doctor all
 ike view reality
 ike view xhttp
 ike view xhttp-reality
@@ -153,6 +155,7 @@ ike smoke xhttp
 ike smoke xhttp-reality
 ike smoke enc-reality
 ike smoke fullstack
+ike smoke all
 ike export clients --output /root/xray-clients.txt
 ike export report --output /root/xray-report.txt
 ```
@@ -164,6 +167,8 @@ ike smoke reality --restart
 ike smoke xhttp --restart
 ike smoke fullstack --restart
 ```
+
+`ike view` 和 `ike export clients` 会输出客户端连接信息，不要公开分享完整输出。
 
 ## Shadowsocks 2022
 
@@ -244,7 +249,7 @@ Reality 使用 `xray x25519` 生成密钥。新版 Xray 可能输出 `PrivateKey
 - VLESS Encryption + REALITY
 - VLESS Encryption + XHTTP + REALITY + FinalMask
 
-原因是 XHTTP、VLESS Encryption、FinalMask 与 Vision flow 叠加后对客户端核心要求更高。高级用户可以实验开启：
+原因是 XHTTP、VLESS Encryption、FinalMask 与 Vision flow 叠加后对客户端核心要求更高。高级用户可以按需开启：
 
 ```bash
 ike xhttp-reality install --flow vision
@@ -260,7 +265,7 @@ ike enc-reality install --flow none
 ike fullstack install --flow none
 ```
 
-`ike xhttp install` 和普通 `ike vless encryption` 使用 `security=none`，不使用 Vision flow。
+`ike xhttp install` 和普通 VLESS Encryption 使用 `security=none`，不使用 Vision flow。
 
 排障命令：
 
@@ -363,15 +368,15 @@ ike xhttp install --finalmask on --finalmask-json '{"tcp":[{"type":"fragment","s
 9. 安装 VLESS Encryption + XHTTP + REALITY + FinalMask（FullStack）
 ```
 
-高级组合适合已经确认普通节点可用、并且想测试更前沿组合的用户。普通用户建议优先使用普通 Reality。高级组合不使用 TLS 证书，默认都是 `security=reality`，不是 `security=tls`。
+高级组合适合已经确认普通节点可用、并且需要更前沿组合的用户。普通用户建议优先使用普通 Reality。高级组合不使用 TLS 证书，默认都是 `security=reality`，不是 `security=tls`。
 
 推荐顺序：
 
 1. 主力推荐：VLESS TCP REALITY
 2. 高级备用：VLESS XHTTP + REALITY
 3. 高级备用：VLESS Encryption + XHTTP + FinalMask
-4. 实验组合：VLESS Encryption + REALITY
-5. 实验组合：VLESS Encryption + XHTTP + REALITY + FinalMask
+4. 谨慎使用：VLESS Encryption + REALITY
+5. 谨慎使用：VLESS Encryption + XHTTP + REALITY + FinalMask
 6. 兼容兜底：VLESS Encryption
 7. 兼容兜底：SS2022
 8. 兼容兜底：SOCKS5
@@ -388,7 +393,7 @@ FullStack 不作为普通用户默认推荐。如果 FullStack 不兼容，建�
 
 ### VLESS XHTTP + REALITY
 
-推荐定位：高级备用。它比 FullStack 更轻，适合先验证 XHTTP 与 REALITY 组合。
+推荐定位：高级备用。它比 FullStack 更轻，适合先确认 XHTTP 与 REALITY 组合的可用性。
 
 ```bash
 ike xhttp-reality install
@@ -405,12 +410,12 @@ ike xhttp-reality remove
 - Transport = XHTTP
 - Security = REALITY
 - REALITY target = `SNI:443`
-- 默认不写 Vision flow，减少 XHTTP + REALITY 的兼容风险；需要实验时可加 `--flow vision`
-- 适合想测试 XHTTP 与 Reality 组合的用户
+- 默认不写 Vision flow，减少 XHTTP + REALITY 的兼容风险；需要时可加 `--flow vision`
+- 适合需要使用 XHTTP 与 Reality 组合的用户
 
 ### VLESS Encryption + REALITY
 
-推荐定位：实验组合。它叠加 VLESS Encryption 与 REALITY，客户端兼容性要求较高。
+推荐定位：谨慎使用组合。它叠加 VLESS Encryption 与 REALITY，客户端兼容性要求较高。
 
 ```bash
 ike enc-reality install
@@ -427,13 +432,13 @@ ike enc-reality remove
 - Transport = TCP
 - Security = REALITY
 - 复用 `xray vlessenc` 生成 VLESS Encryption
-- 默认不写 Vision flow；需要实验时可加 `--flow vision`
+- 默认不写 Vision flow；需要时可加 `--flow vision`
 - 客户端需要同时支持 VLESS Encryption 与 REALITY
 - 不建议把它作为唯一节点，建议保留普通 Reality 作为备用
 
 ### VLESS Encryption + XHTTP + REALITY + FinalMask
 
-推荐定位：最高级实验组合，不作为普通用户默认推荐。
+推荐定位：最高级组合，不作为普通用户默认推荐。
 
 ```bash
 ike fullstack install
@@ -454,7 +459,7 @@ ike fullstack remove
 - 复用 VLESS Encryption
 - 可选 FinalMask
 - 不使用 TLS 证书
-- 默认不写 Vision flow；需要实验时可加 `--flow vision`
+- 默认不写 Vision flow；需要时可加 `--flow vision`
 - 兼容性最挑客户端
 
 如果 FullStack 导入或连接失败，先尝试：
@@ -482,7 +487,7 @@ SOCKS5 适合临时代理或内网调试。安装后可通过 `ike view` 查看�
 通过菜单进入：
 
 ```text
-15. Tunnel 中转管理
+18. Tunnel 中转管理
 ```
 
 常用命令：
@@ -523,7 +528,7 @@ ike endpoint clear
 ike endpoint detect
 ```
 
-显示模式可在菜单第 9 项切换，也可通过：
+显示模式可在菜单第 12 项切换，也可通过：
 
 ```bash
 ike view ipv4
@@ -559,11 +564,15 @@ ike safety enhanced off
 
 ```bash
 ike preflight
+ike config test
 ike doctor all
 ike doctor proxy
 ike doctor reality
 ike doctor reality-key
 ike doctor xhttp
+ike doctor xhttp-reality
+ike doctor enc-reality
+ike doctor fullstack
 ```
 
 服务侧检查：
@@ -571,6 +580,9 @@ ike doctor xhttp
 ```bash
 ike smoke reality
 ike smoke xhttp
+ike smoke xhttp-reality
+ike smoke enc-reality
+ike smoke fullstack
 ike smoke all
 ```
 
