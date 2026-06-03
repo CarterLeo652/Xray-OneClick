@@ -1,16 +1,16 @@
 # Xray-OneClick
 
-**Xray-OneClick 1.1.5**
+**Xray-OneClick 1.1.6**
 
 Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在 Debian / Ubuntu systemd 服务器上快速安装和维护个人 Xray 节点。
 
 脚本支持 Shadowsocks 2022、VLESS Encryption、VLESS TCP REALITY、VLESS Encryption + XHTTP + FinalMask、SOCKS5、Tunnel 中转管理，以及高级协议组合。默认带基础安全屏蔽、配置备份、服务诊断、配置导出、Xray-core 升级和安全卸载能力。
 
-当前版本：`1.1.5`
+当前版本：`1.1.6`
 
 状态：正式版
 
-说明：1.1.5 是最终用户发布清理版。普通 VLESS TCP REALITY 默认使用 `xtls-rprx-vision`；高级 Reality 组合默认不启用 Vision flow，可按需用 `--flow vision` 试验开启。
+说明：1.1.6 是默认中国大陆直连屏蔽关闭的修复版。普通 VLESS TCP REALITY 默认使用 `xtls-rprx-vision`；高级 Reality 组合默认不启用 Vision flow，可按需用 `--flow vision` 试验开启。
 
 ## 功能特性
 
@@ -239,6 +239,8 @@ Reality 使用 `xray x25519` 生成密钥。新版 Xray 可能输出 `PrivateKey
 
 `privateKey` 是服务端敏感字段，不需要填到客户端；客户端需要的是 `publicKey/pbk`。
 
+如果你手动开启了中国大陆直连屏蔽，并且 Reality 类协议连接异常，请先执行 `ike cnblock off` 排查。
+
 ## Vision flow 说明
 
 普通 VLESS TCP REALITY 默认使用 `xtls-rprx-vision`，这是主力 Reality 的推荐配置。脚本会同时把 flow 写入服务端 `clients[0].flow`、客户端分享链接和 state，避免出现链接与服务端配置不一致。
@@ -413,6 +415,8 @@ ike xhttp-reality remove
 - 默认不写 Vision flow，减少 XHTTP + REALITY 的兼容风险；需要时可加 `--flow vision`
 - 适合需要使用 XHTTP 与 Reality 组合的用户
 
+如果你手动开启了中国大陆直连屏蔽，并且 Reality 类协议连接异常，请先执行 `ike cnblock off` 排查。
+
 ### VLESS Encryption + REALITY
 
 推荐定位：谨慎使用组合。它叠加 VLESS Encryption 与 REALITY，客户端兼容性要求较高。
@@ -435,6 +439,8 @@ ike enc-reality remove
 - 默认不写 Vision flow；需要时可加 `--flow vision`
 - 客户端需要同时支持 VLESS Encryption 与 REALITY
 - 不建议把它作为唯一节点，建议保留普通 Reality 作为备用
+
+如果你手动开启了中国大陆直连屏蔽，并且 Reality 类协议连接异常，请先执行 `ike cnblock off` 排查。
 
 ### VLESS Encryption + XHTTP + REALITY + FinalMask
 
@@ -461,6 +467,8 @@ ike fullstack remove
 - 不使用 TLS 证书
 - 默认不写 Vision flow；需要时可加 `--flow vision`
 - 兼容性最挑客户端
+
+如果你手动开启了中国大陆直连屏蔽，并且 Reality 类协议连接异常，请先执行 `ike cnblock off` 排查。
 
 如果 FullStack 导入或连接失败，先尝试：
 
@@ -538,7 +546,19 @@ ike view dual
 
 ## 安全屏蔽
 
-脚本默认写入基础安全屏蔽规则，用于阻断 BT/PT、私网地址、SMTP、SMB/NetBIOS 等高风险目标。
+脚本默认开启基础安全屏蔽，用于阻断 BT/PT、私网地址、危险端口、SMTP、SMB/NetBIOS 等高风险目标。
+
+默认开启：
+- 私网地址屏蔽
+- 危险端口屏蔽
+- BT 屏蔽
+- SMTP/SMB 风险端口屏蔽
+
+默认关闭：
+- 中国大陆直连屏蔽
+
+原因是 Reality / XHTTP + Reality / FullStack 需要服务端直连 SNI target。中国大陆直连屏蔽属于可选策略，默认关闭，避免误伤 Reality 类协议。
+安装/更新 Xray 和安装任意协议时都不会自动开启 cnblock，只能由 `ike cnblock ...` 手动切换。
 
 中国大陆直连屏蔽：
 

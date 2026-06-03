@@ -19,7 +19,7 @@ LEGACY_SHORTCUT_PATH="/usr/local/bin/sb"
 INSTALLER_DIR="/usr/local/share/ike"
 INSTALLER_PATH="${INSTALLER_DIR}/install.sh"
 SCRIPT_NAME="Xray-OneClick"
-SCRIPT_VERSION="1.1.5"
+SCRIPT_VERSION="1.1.6"
 REPO_URL="https://github.com/ike-sh/Xray-OneClick"
 RAW_SCRIPT_URL="https://raw.githubusercontent.com/ike-sh/Xray-OneClick/main/install.sh"
 XRAY_RELEASE_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
@@ -428,6 +428,69 @@ init_state() {
     ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
     rm -f "$tmp"
 
+    ensure_cnblock_state_defaults || return 1
+    ensure_config_security
+}
+
+cnblock_rules_present() {
+    [[ -f "$CONFIG_FILE" ]] || return 1
+    command -v jq >/dev/null 2>&1 || return 1
+    jq -e --arg block "$BLOCK_OUTBOUND_TAG" '
+      any(.routing.rules[]?;
+        . == {"type": "field", "ip": ["geoip:cn"], "outboundTag": $block} or
+        . == {"type": "field", "domain": ["geosite:cn"], "outboundTag": $block}
+      )
+    ' "$CONFIG_FILE" >/dev/null 2>&1
+}
+
+ensure_cnblock_state_defaults() {
+    local tmp
+
+    [[ -f "$STATE_FILE" ]] || return 0
+    command -v jq >/dev/null 2>&1 || return 1
+
+    if cnblock_rules_present; then
+        return 0
+    fi
+    if jq -e 'has("cnblock_enabled") and has("cnblock_user_set")' "$STATE_FILE" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    tmp="$(mktemp)" || return 1
+    if ! jq '
+      .cnblock_enabled = (.cnblock_enabled // false) |
+      .cnblock_user_set = (.cnblock_user_set // false)
+    ' "$STATE_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    mv "$tmp" "$STATE_FILE" || {
+        rm -f "$tmp"
+        return 1
+    }
+    rm -f "$tmp"
+    ensure_config_security
+}
+
+state_set_cnblock() {
+    init_state
+    local enabled="$1"
+    local user_set="$2"
+    local tmp
+
+    tmp="$(mktemp)" || return 1
+    if ! jq --arg enabled "$enabled" --arg user_set "$user_set" '
+      .cnblock_enabled = ($enabled == "true") |
+      .cnblock_user_set = ($user_set == "true")
+    ' "$STATE_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    mv "$tmp" "$STATE_FILE" || {
+        rm -f "$tmp"
+        return 1
+    }
+    rm -f "$tmp"
     ensure_config_security
 }
 
@@ -4770,20 +4833,16 @@ configure_enhanced_safety_block() {
     fi
 }
 
-china_direct_block_enabled() {
-    [[ "$(china_direct_block_status)" != "未启用" ]]
-}
-
-china_direct_block_status() {
+china_direct_block_rule_mode() {
     local has_ip="false"
     local has_domain="false"
 
     [[ -f "$CONFIG_FILE" ]] || {
-        printf '%s' "未启用"
+        printf '%s' "off"
         return 0
     }
     command -v jq >/dev/null 2>&1 || {
-        printf '%s' "未启用"
+        printf '%s' "off"
         return 0
     }
 
@@ -4800,12 +4859,59 @@ china_direct_block_status() {
     fi
 
     if [[ "$has_ip" == "true" && "$has_domain" == "true" ]]; then
-        printf '%s' "增强模式"
+        printf '%s' "enhanced"
     elif [[ "$has_ip" == "true" ]]; then
-        printf '%s' "基础模式"
+        printf '%s' "basic"
+    else
+        printf '%s' "off"
+    fi
+}
+
+china_direct_block_enabled() {
+    [[ "$(china_direct_block_rule_mode)" != "off" ]]
+}
+
+china_direct_block_status() {
+    local user_set="false"
+    local mode
+
+    [[ -f "$STATE_FILE" ]] && command -v jq >/dev/null 2>&1 && {
+        user_set="$(jq -r '.cnblock_user_set // false' "$STATE_FILE" 2>/dev/null)"
+    }
+    mode="$(china_direct_block_rule_mode)"
+
+    if [[ "$mode" != "off" ]]; then
+        if [[ "$user_set" == "true" ]]; then
+            printf '%s' "已启用（用户开启）"
+        else
+            printf '%s' "检测到旧规则，建议确认"
+        fi
+    elif [[ "$user_set" == "true" ]]; then
+        printf '%s' "未启用（用户关闭）"
     else
         printf '%s' "未启用"
     fi
+}
+
+cnblock_reality_risk_notice() {
+    local status warning
+
+    status="$(china_direct_block_status)"
+    case "$status" in
+        "已启用（用户开启）")
+            warning="中国大陆直连屏蔽已启用，如 SNI target 被影响，Reality 可能连接异常。"
+            ;;
+        "检测到旧规则，建议确认")
+            warning="检测到旧版中国大陆直连屏蔽规则，可能来自旧默认策略。1.1.6 起默认关闭；如不需要请执行 ike cnblock off。"
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+
+    [[ "${CNBLOCK_RISK_NOTICE_SHOWN:-false}" == "true" ]] && return 0
+    CNBLOCK_RISK_NOTICE_SHOWN="true"
+    diag_warn "$warning"
 }
 
 check_china_direct_block_assets() {
@@ -4931,6 +5037,11 @@ set_china_direct_block() {
         return 1
     fi
 
+    if [[ "$mode" == "off" ]]; then
+        state_set_cnblock "false" "true" || err "[状态] cnblock 状态写入失败。"
+    else
+        state_set_cnblock "true" "true" || err "[状态] cnblock 状态写入失败。"
+    fi
     case "$mode" in
         basic) action="基础模式" ;;
         enhanced) action="增强模式" ;;
@@ -7861,6 +7972,11 @@ run_cnblock_command() {
     case "$mode" in
         "" | status)
             echo -e "中国大陆直连屏蔽: ${YELLOW}$(china_direct_block_status)${PLAIN}"
+            case "$(china_direct_block_rule_mode)" in
+                basic) echo -e "规则模式: ${YELLOW}基础模式${PLAIN}" ;;
+                enhanced) echo -e "规则模式: ${YELLOW}增强模式${PLAIN}" ;;
+            esac
+            echo "可选: basic / enhanced / off"
             echo "用法: ike cnblock basic|enhanced|off"
             ;;
         basic | enhanced | off)
@@ -8417,6 +8533,7 @@ doctor_reality() {
     doctor_reality_state
     doctor_reality_port "$port" "$defender_port"
     doctor_reality_sni "$sni"
+    cnblock_reality_risk_notice
     doctor_reality_output
 }
 
@@ -8527,6 +8644,7 @@ doctor_advanced_profile() {
     else
         diag_ok "Vision flow 未启用（高级组合默认）"
     fi
+    cnblock_reality_risk_notice
     if advanced_profile_has_finalmask "$kind"; then
         state_enabled="$(jq -r ".${state_key}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
         config_has_fm="$(echo "$in" | jq -r '.streamSettings | has("finalmask")')"
@@ -8575,6 +8693,8 @@ doctor_proxy() {
         diag_info "监听端口: ${ports:-无}"
     fi
     default_safety_block_enabled && diag_ok "默认安全屏蔽规则存在" || diag_warn "默认安全屏蔽规则未完整启用"
+    diag_info "中国大陆直连屏蔽: $(china_direct_block_status)"
+    cnblock_reality_risk_notice
     detect_xray_feature_support
     doctor_xray_x25519
     if view_config dual quick >/dev/null 2>&1; then
@@ -8645,6 +8765,7 @@ smoke_reality() {
         return 0
     fi
     print_reality_result "show"
+    cnblock_reality_risk_notice
     run_xray_config_test_verbose || print_reality_failure_hint
     if [[ "$restart" == "true" ]]; then
         if restart_xray_service; then
@@ -8714,6 +8835,7 @@ smoke_advanced_profile() {
         return 0
     fi
     print_advanced_profile_result "$kind" "show"
+    cnblock_reality_risk_notice
     if ! run_xray_config_test_verbose; then
         if advanced_profile_has_finalmask "$kind"; then
             fm_enabled="$(jq -r ".${state_key}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
@@ -9199,6 +9321,12 @@ migrate_old_state() {
             else
                 diag_warn "无法推导 XHTTP link，缺少 path/encryption/uuid/finalmask_enabled 等字段"
             fi
+        fi
+    fi
+
+    if [[ "$(china_direct_block_rule_mode)" != "off" ]]; then
+        if [[ "$(jq -r '.cnblock_user_set // empty' "$STATE_FILE" 2>/dev/null)" != "true" ]]; then
+            diag_warn "检测到旧版中国大陆直连屏蔽规则，可能来自旧默认策略。1.1.6 起默认关闭；如不需要请执行 ike cnblock off。"
         fi
     fi
 
@@ -9861,6 +9989,7 @@ Xray-OneClick 命令帮助
   ike cnblock basic
   ike cnblock enhanced
   ike cnblock off
+  说明：中国大陆直连屏蔽默认关闭，只在手动启用后生效。
   ike safety enhanced on
   ike safety enhanced off
   ike reality install
