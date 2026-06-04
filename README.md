@@ -1,16 +1,16 @@
 # Xray-OneClick
 
-**Xray-OneClick 1.1.6**
+**Xray-OneClick 1.1.7**
 
 Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在 Debian / Ubuntu systemd 服务器上快速安装和维护个人 Xray 节点。
 
-脚本支持 Shadowsocks 2022、VLESS Encryption、VLESS TCP REALITY、VLESS Encryption + XHTTP + FinalMask、SOCKS5、Tunnel 中转管理，以及高级协议组合。默认带基础安全屏蔽、配置备份、服务诊断、配置导出、Xray-core 升级和安全卸载能力。
+脚本支持 Shadowsocks 2022、VLESS Encryption、VLESS TCP REALITY、VLESS Encryption + XHTTP + FinalMask、SOCKS5、Tunnel 中转管理，以及高级协议组合。默认带基础安全屏蔽、配置备份、服务诊断、配置导出、Xray-core 升级和安全卸载能力，并提供 stable / prerelease 两条 Xray-core 通道。
 
-当前版本：`1.1.6`
+当前版本：`1.1.7`
 
 状态：正式版
 
-说明：1.1.6 是默认中国大陆直连屏蔽关闭的修复版。普通 VLESS TCP REALITY 默认使用 `xtls-rprx-vision`；高级 Reality 组合默认不启用 Vision flow，可按需用 `--flow vision` 试验开启。
+说明：1.1.7 在默认中国大陆直连屏蔽关闭的基础上，补齐了 Xray release 通道、REALITY `target` 迁移、高级组合 fallback 提示和更保守的 FinalMask 默认策略。普通 VLESS TCP REALITY 默认使用 `xtls-rprx-vision`；高级 Reality 组合默认不启用 Vision flow，可按需用 `--flow vision` 试验开启。
 
 ## 功能特性
 
@@ -32,6 +32,7 @@ Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在
 - 诊断 / smoke / export
 - `keep-config` / `purge` 卸载
 - GitHub 下载镜像兜底
+- Xray-core stable / prerelease 通道
 - Xray-core 指定版本升级和失败回滚
 
 ## 系统要求
@@ -108,6 +109,16 @@ ike xray upgrade
 ike xray upgrade --restart
 ```
 
+## Xray 通道
+
+stable 适合生产，prerelease 适合测试最新 XHTTP / REALITY / FinalMask 特性，但可能存在客户端兼容风险。
+
+```bash
+ike xray upgrade --xray-channel stable
+ike xray upgrade --xray-channel prerelease
+XRAY_VERSION=v26.3.27 XRAY_CHANNEL=prerelease ike xray upgrade
+```
+
 ## 主菜单
 
 ```text
@@ -167,6 +178,14 @@ ike smoke reality --restart
 ike smoke xhttp --restart
 ike smoke fullstack --restart
 ```
+
+`smoke` 面向真实安装后的服务器环境；如果只是想验证脚本生成的 Xray JSON 是否符合协议组合预期，可以运行离线配置生成测试。它不会写 `/usr/local/etc/xray`、不会启动 systemd、不会下载 Xray，也不要求 root：
+
+```bash
+bash tests/test_config_generation.sh
+```
+
+测试会覆盖普通 Reality、XHTTP FinalMask on/off、高级 Reality 组合、FullStack 和 `--fallback-limit conservative`。如果环境中存在 `xray`，测试会自动执行 `xray run -test -config <config>`；没有 `xray` 时会明确输出 skip 原因。
 
 `ike view` 和 `ike export clients` 会输出客户端连接信息，不要公开分享完整输出。
 
@@ -230,6 +249,7 @@ ike reality remove
 - 主 inbound：`vless+tcp+reality`
 - defender inbound：`reality-defender`
 - defender 监听：`127.0.0.1`
+- Reality target：`127.0.0.1:<defender_port>`
 - defender 目标：`SNI:443`
 - Flow：`xtls-rprx-vision`
 - Fingerprint：`chrome`
@@ -238,6 +258,12 @@ ike reality remove
 Reality 使用 `xray x25519` 生成密钥。新版 Xray 可能输出 `PrivateKey`、`Password`、`Password (PublicKey)`、`Hash32` 等字段；脚本会将 `PrivateKey` 写入服务端配置，将 `PublicKey` / `Password` / `Password (PublicKey)` 作为客户端 `pbk`。
 
 `privateKey` 是服务端敏感字段，不需要填到客户端；客户端需要的是 `publicKey/pbk`。
+
+### 443 vs 随机高端口
+
+- 443：更自然，但容易和 Nginx/Caddy/面板冲突。
+- 随机高端口：部署更方便，但新版 Xray 可能会提示非 443 warning。
+- 如果你手动指定 443，请先确认 443 没被其他服务占用。
 
 如果你手动开启了中国大陆直连屏蔽，并且 Reality 类协议连接异常，请先执行 `ike cnblock off` 排查。
 
@@ -307,7 +333,7 @@ ike xhttp remove
 - 用户指定 path 必须以 `/` 开头
 - path 不允许空格、`?`、`#` 或反斜杠
 - FinalMask 可通过 `--finalmask on/off` 控制
-- FinalMask 默认使用 `balanced` 模板，也可以选择预设、自定义参数或粘贴完整 JSON
+- FinalMask 默认关闭；开启后默认使用 `balanced` 模板，也可以选择预设、自定义参数或粘贴完整 JSON
 
 FinalMask 属于高级兼容功能。开启后分享链接会包含 URL 编码后的 `fm=` 参数，链接可能较长；部分客户端可能需要手动填写 path、encryption、finalmask 参数。如果服务端配置应用失败或客户端导入异常，请优先使用：
 
@@ -324,9 +350,9 @@ ike smoke xhttp
 
 ## FinalMask 参数
 
-FinalMask 是高级兼容功能，客户端支持情况取决于客户端核心。参数越激进不一定越好；如果连接变慢、不稳定或客户端无法导入，优先切换到 `conservative`，或者直接使用 `--finalmask off`。
+FinalMask 是高级兼容功能，脚本默认不会自动开启；客户端支持情况取决于客户端核心。参数越激进不一定越好；如果连接变慢、不稳定或客户端无法导入，优先切换到 `conservative`，或者直接使用 `--finalmask off`。
 
-默认模板是 `balanced`：
+开启后默认模板是 `balanced`：
 
 | 预设 | 定位 | length | delay | maxSplit |
 | --- | --- | --- | --- | --- |
@@ -370,7 +396,7 @@ ike xhttp install --finalmask on --finalmask-json '{"tcp":[{"type":"fragment","s
 9. 安装 VLESS Encryption + XHTTP + REALITY + FinalMask（FullStack）
 ```
 
-高级组合适合已经确认普通节点可用、并且需要更前沿组合的用户。普通用户建议优先使用普通 Reality。高级组合不使用 TLS 证书，默认都是 `security=reality`，不是 `security=tls`。
+高级组合适合已经确认普通节点可用、并且需要更前沿组合的用户。普通用户建议优先使用普通 Reality。高级组合不使用 TLS 证书，默认都是 `security=reality`，不是 `security=tls`。这些组合会把 `realitySettings.target` 直接写成 `<sni>:443`，未通过 REALITY 认证的流量会被转发到 target；如果想更保守，可以加 `--fallback-limit conservative`，脚本会写入随机化的 `limitFallbackUpload` / `limitFallbackDownload`。
 
 推荐顺序：
 
@@ -401,6 +427,7 @@ FullStack 不作为普通用户默认推荐。如果 FullStack 不兼容，建�
 ike xhttp-reality install
 ike xhttp-reality install --port 30006 --path /api/test --sni www.abmindustriesgroup.com
 ike xhttp-reality install --flow vision
+ike xhttp-reality install --flow vision --fallback-limit conservative
 ike xhttp-reality show
 ike doctor xhttp-reality
 ike smoke xhttp-reality --restart
@@ -425,6 +452,7 @@ ike xhttp-reality remove
 ike enc-reality install
 ike enc-reality install --port 30007 --sni www.abmindustriesgroup.com
 ike enc-reality install --flow vision
+ike enc-reality install --flow vision --fallback-limit conservative
 ike enc-reality show
 ike doctor enc-reality
 ike smoke enc-reality --restart
@@ -451,6 +479,7 @@ ike fullstack install
 ike fullstack install --port 30008 --path /api/test --sni www.abmindustriesgroup.com --finalmask on
 ike fullstack install --port 30008 --path /api/test --sni www.abmindustriesgroup.com --finalmask on --finalmask-preset balanced
 ike fullstack install --flow vision --finalmask off
+ike fullstack install --flow vision --fallback-limit conservative --finalmask off
 ike fullstack install --port 30008 --path /api/test --sni www.abmindustriesgroup.com --finalmask off
 ike fullstack show
 ike doctor fullstack
@@ -638,6 +667,13 @@ ike xray upgrade
 
 ```bash
 ike xray upgrade --version v26.3.27
+```
+
+预发布通道：
+
+```bash
+ike xray upgrade --xray-channel prerelease
+XRAY_CHANNEL=prerelease ike xray upgrade
 ```
 
 升级成功后默认不重启服务。需要重启时：

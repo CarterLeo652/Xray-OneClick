@@ -13,17 +13,18 @@ CONFIG_DIR="/etc/xray"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
 STATE_FILE="${CONFIG_DIR}/installer-state.json"
 ASSET_DIR="/usr/local/share/xray"
-BIN_PATH="/usr/local/bin/xray"
+BIN_PATH="${XRAY_BIN:-/usr/local/bin/xray}"
 SHORTCUT_PATH="/usr/local/bin/ike"
 LEGACY_SHORTCUT_PATH="/usr/local/bin/sb"
 INSTALLER_DIR="/usr/local/share/ike"
 INSTALLER_PATH="${INSTALLER_DIR}/install.sh"
 SCRIPT_NAME="Xray-OneClick"
-SCRIPT_VERSION="1.1.6"
+SCRIPT_VERSION="1.1.7"
 REPO_URL="https://github.com/ike-sh/Xray-OneClick"
 RAW_SCRIPT_URL="https://raw.githubusercontent.com/ike-sh/Xray-OneClick/main/install.sh"
-XRAY_RELEASE_API="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
-XRAY_RELEASE_BASE="https://github.com/XTLS/Xray-core/releases/download"
+XRAY_RELEASE_API_STABLE="https://api.github.com/repos/XTLS/Xray-core/releases/latest"
+XRAY_RELEASE_API_PRERELEASE="https://api.github.com/repos/XTLS/Xray-core/releases?per_page=20"
+XRAY_RELEASE_API_TAG_BASE="https://api.github.com/repos/XTLS/Xray-core/releases/tags"
 MIN_ROOT_FREE_KB="204800"
 
 SS_TAG="ss2022-in"
@@ -68,7 +69,6 @@ REALITY_SNI_CANDIDATES=(
     "www.amazon.com"
     "www.samsung.com"
     "www.nvidia.com"
-    "www.cloudflare.com"
 )
 
 info() { echo -e "${YELLOW}$*${PLAIN}"; }
@@ -933,34 +933,86 @@ download_with_mirrors() {
     return 1
 }
 
-xray_release_asset_url() {
-    local version="${1:-latest}"
-    local release_json latest_url
-
-    if [[ "$version" != "latest" ]]; then
-        printf '%s/%s/%s' "$XRAY_RELEASE_BASE" "$version" "$XRAY_ASSET"
-        return 0
-    fi
-
-    release_json="$(download_release_metadata)" || return 1
-    latest_url="$(echo "$release_json" | jq -r --arg asset "$XRAY_ASSET" '.assets[]? | select(.name == $asset) | .browser_download_url' | head -n 1)"
-    XRAY_DOWNLOAD_VERSION="$(echo "$release_json" | jq -r '.tag_name // "latest"')"
-    [[ -n "$latest_url" && "$latest_url" != "null" ]] || return 1
-    printf '%s' "$latest_url"
+normalize_xray_channel() {
+    case "${1:-stable}" in
+        stable | "") printf '%s' "stable" ;;
+        prerelease | pre-release | pre) printf '%s' "prerelease" ;;
+        *) return 1 ;;
+    esac
 }
 
-download_release_metadata() {
-    local tmp
+xray_release_api_for_channel() {
+    case "${1:-stable}" in
+        stable) printf '%s' "$XRAY_RELEASE_API_STABLE" ;;
+        prerelease) printf '%s' "$XRAY_RELEASE_API_PRERELEASE" ;;
+        *) return 1 ;;
+    esac
+}
 
+xray_release_metadata_url() {
+    local version="${1:-latest}"
+    local channel="${2:-stable}"
+
+    channel="$(normalize_xray_channel "$channel")" || return 1
+    if [[ "$version" == "latest" ]]; then
+        xray_release_api_for_channel "$channel"
+    else
+        printf '%s/%s' "$XRAY_RELEASE_API_TAG_BASE" "$version"
+    fi
+}
+
+xray_release_metadata() {
+    local version="${1:-latest}"
+    local channel="${2:-stable}"
+    local api tmp release_json
+
+    api="$(xray_release_metadata_url "$version" "$channel")" || return 1
     tmp="$(mktemp)" || return 1
-    if download_one_url "$XRAY_RELEASE_API" "$tmp" >/dev/null 2>&1; then
-        cat "$tmp"
+    if ! download_one_url "$api" "$tmp" >/dev/null 2>&1; then
         rm -f "$tmp"
-        return 0
+        if [[ "$version" == "latest" ]]; then
+            err "[核心] 无法访问 Xray ${channel} release API；可使用 --xray-version 指定版本。"
+        else
+            err "[核心] 无法访问 Xray release ${version}；可使用 --xray-version 指定版本。"
+        fi
+        return 1
+    fi
+
+    if [[ "$version" == "latest" && "$channel" == "prerelease" ]]; then
+        release_json="$(jq -c --arg asset "$XRAY_ASSET" 'map(select(.prerelease == true and any(.assets[]?; .name == $asset))) | .[0] // empty' "$tmp")"
+        [[ -n "$release_json" && "$release_json" != "null" ]] || {
+            rm -f "$tmp"
+            err "[核心] prerelease 通道中未找到匹配 ${XRAY_ASSET} 的 release。"
+            return 1
+        }
+        printf '%s' "$release_json"
+    else
+        cat "$tmp"
     fi
     rm -f "$tmp"
-    err "[核心] 无法访问 GitHub Releases API；可使用 --xray-version 指定版本。"
-    return 1
+}
+
+xray_release_asset_url() {
+    local version="${1:-latest}"
+    local channel="${2:-stable}"
+    local release_json release_url release
+
+    channel="$(normalize_xray_channel "$channel")" || {
+        err "[核心] 未知 Xray 通道: ${channel}"
+        return 1
+    }
+    release_json="$(xray_release_metadata "$version" "$channel")" || return 1
+    XRAY_DOWNLOAD_CHANNEL="$channel"
+    XRAY_DOWNLOAD_VERSION="$(echo "$release_json" | jq -r --arg fallback "$version" '.tag_name // $fallback')"
+    XRAY_DOWNLOAD_IS_PRERELEASE="$(echo "$release_json" | jq -r '.prerelease // false')"
+    if [[ "$version" == "latest" && "$channel" == "prerelease" ]]; then
+        release="$(echo "$release_json" | jq -c --arg asset "$XRAY_ASSET" 'map(select(.prerelease == true and any(.assets[]?; .name == $asset))) | .[0] // empty')"
+        [[ -n "$release" && "$release" != "null" ]] || return 1
+        release_json="$release"
+    fi
+    release_url="$(echo "$release_json" | jq -r --arg asset "$XRAY_ASSET" '.assets[]? | select(.name == $asset) | .browser_download_url' | head -n 1)"
+    [[ -n "$release_url" && "$release_url" != "null" ]] || return 1
+    printf '%s' "$release_url"
 }
 
 verify_xray_archive() {
@@ -996,13 +1048,20 @@ verify_xray_archive() {
 
 download_xray_core() {
     local version="${1:-latest}"
-    local tmpdir="${2:-}"
+    local channel="${2:-stable}"
+    local tmpdir="${3:-}"
     local url zip_path
 
     [[ -n "$tmpdir" ]] || tmpdir="$(mktemp -d)"
     mkdir -p "$tmpdir"
+    channel="$(normalize_xray_channel "$channel")" || {
+        err "[核心] 未知 Xray 通道: ${channel}"
+        return 1
+    }
+    XRAY_DOWNLOAD_CHANNEL="$channel"
+    XRAY_DOWNLOAD_IS_PRERELEASE="false"
     XRAY_DOWNLOAD_VERSION="$version"
-    url="$(xray_release_asset_url "$version")" || {
+    url="$(xray_release_asset_url "$version" "$channel")" || {
         err "[核心] 无法解析 Xray 下载地址。"
         return 1
     }
@@ -1020,17 +1079,25 @@ install_xray_binary() {
 
 upgrade_xray_core() {
     local version="${1:-latest}"
-    local dry_run="${2:-false}"
-    local restart="${3:-false}"
+    local channel="${2:-stable}"
+    local dry_run="${3:-false}"
+    local restart="${4:-false}"
     local tmpdir backup_path=""
 
+    channel="$(normalize_xray_channel "$channel")" || {
+        err "[核心] 未知 Xray 通道: ${channel}"
+        return 1
+    }
     detect_arch
     tmpdir="$(mktemp -d)" || return 1
-    download_xray_core "$version" "$tmpdir" || {
+    download_xray_core "$version" "$channel" "$tmpdir" || {
         rm -rf "$tmpdir"
         return 1
     }
     if [[ "$dry_run" == "true" ]]; then
+        echo "[dry-run] Xray 通道: ${XRAY_DOWNLOAD_CHANNEL:-$channel}"
+        echo "[dry-run] 解析版本: ${XRAY_DOWNLOAD_VERSION:-$version}"
+        echo "[dry-run] prerelease: ${XRAY_DOWNLOAD_IS_PRERELEASE:-false}"
         echo "[dry-run] 将安装 Xray: $("$XRAY_EXTRACTED_BINARY" version 2>/dev/null | head -n 1)"
         echo "[dry-run] 不修改当前二进制: $BIN_PATH"
         rm -rf "$tmpdir"
@@ -1050,6 +1117,7 @@ upgrade_xray_core() {
         return 1
     fi
     info "[核心] Xray 已升级: $(detect_xray_version 2>/dev/null || printf '%s' '版本未知')"
+    info "[核心] 通道: ${XRAY_DOWNLOAD_CHANNEL:-$channel} / 版本: ${XRAY_DOWNLOAD_VERSION:-$version} / prerelease: ${XRAY_DOWNLOAD_IS_PRERELEASE:-false}"
     [[ "$restart" == "true" ]] && restart_xray_service
     rm -rf "$tmpdir"
 }
@@ -1096,9 +1164,14 @@ apply_config() {
 
 install_or_update_xray() {
     local force="${1:-false}"
-    local version="${XRAY_VERSION_REQUEST:-latest}"
+    local version="${XRAY_VERSION_REQUEST:-${XRAY_VERSION:-latest}}"
+    local channel="${XRAY_CHANNEL_REQUEST:-${XRAY_CHANNEL:-stable}}"
     local tmpdir replacing_existing
 
+    channel="$(normalize_xray_channel "$channel")" || {
+        err "[核心] 未知 Xray 通道: ${channel}"
+        return 1
+    }
     install_dependencies || return 1
     init_config || return 1
     init_state || return 1
@@ -1110,8 +1183,8 @@ install_or_update_xray() {
     fi
 
     tmpdir="$(mktemp -d)"
-    info "[核心] 下载 Xray ${version} (${XRAY_ASSET})..."
-    if ! download_xray_core "$version" "$tmpdir"; then
+    info "[核心] 下载 Xray ${version} (${channel} 通道, ${XRAY_ASSET})..."
+    if ! download_xray_core "$version" "$channel" "$tmpdir"; then
         rm -rf "$tmpdir"
         return 1
     fi
@@ -1163,6 +1236,7 @@ install_or_update_xray() {
     fi
 
     ok "[核心] Xray ${XRAY_DOWNLOAD_VERSION:-$version} 安装/更新完成。"
+    info "[核心] 通道: ${XRAY_DOWNLOAD_CHANNEL:-$channel} / prerelease: ${XRAY_DOWNLOAD_IS_PRERELEASE:-false}"
 }
 
 update_xray_core() {
@@ -1182,6 +1256,11 @@ validate_port() {
 
 check_port() {
     local port="$1"
+
+    if env_truthy "${IKE_TEST_MODE:-}"; then
+        return 0
+    fi
+
     if command -v ss >/dev/null 2>&1; then
         ss -tulpn 2>/dev/null | grep -qE "[:.]${port}[[:space:]]" && return 1
     elif command -v netstat >/dev/null 2>&1; then
@@ -1650,6 +1729,15 @@ generate_vless_encryption_pair() {
     local auth="$1"
     local output dec_line enc_line
 
+    if env_truthy "${IKE_TEST_MODE:-}" && [[ ! -x "$BIN_PATH" ]]; then
+        VLESS_DECRYPTION="test-decryption-${auth:-x25519}.native.600s"
+        VLESS_ENCRYPTION="test-encryption-${auth:-x25519}.native.0rtt"
+        VLESS_ENC_METHOD="${VLESS_ENC_METHOD:-native}"
+        VLESS_CLIENT_RTT="${VLESS_CLIENT_RTT:-0rtt}"
+        VLESS_SERVER_TICKET="${VLESS_SERVER_TICKET:-600s}"
+        return 0
+    fi
+
     output="$("$BIN_PATH" vlessenc 2>/dev/null)" || {
         err "[VLESS] xray vlessenc 执行失败，请确认 Xray 版本支持 VLESS Encryption。"
         return 1
@@ -1943,7 +2031,11 @@ generate_reality_short_ids() {
 
     REALITY_SHORT_IDS=()
     for len in "${lengths[@]}"; do
-        id="$(openssl rand -hex "$((len / 2))" | cut -c "1-${len}")" || return 1
+        if command -v openssl >/dev/null 2>&1; then
+            id="$(openssl rand -hex "$((len / 2))" | cut -c "1-${len}")" || return 1
+        else
+            id="$(printf "%0${len}d" "$len" | cut -c "1-${len}")"
+        fi
         REALITY_SHORT_IDS+=("$id")
     done
     REALITY_DEFAULT_SHORT_ID="${REALITY_SHORT_IDS[0]}"
@@ -2039,6 +2131,13 @@ parse_xray_x25519_output() {
 
 generate_reality_keys() {
     local output status
+
+    if env_truthy "${IKE_TEST_MODE:-}" && [[ ! -x "$BIN_PATH" ]]; then
+        REALITY_PRIVATE_KEY="test-private-key-for-offline-config-generation"
+        REALITY_PUBLIC_KEY="test-public-key-for-offline-config-generation"
+        REALITY_X25519_HASH32=""
+        return 0
+    fi
 
     output="$("$BIN_PATH" x25519 2>&1)"
     status=$?
@@ -2406,6 +2505,17 @@ xray_test_temp_config() {
     return 0
 }
 
+write_test_config_out() {
+    local config_path="$1"
+    local output="${IKE_CONFIG_OUT:-}"
+
+    [[ -n "$output" ]] || return 0
+    mkdir -p "$(dirname "$output")" || return 1
+    cp "$config_path" "$output" || return 1
+    chmod 600 "$output" 2>/dev/null || true
+    echo "[test] offline config written: $output"
+}
+
 print_reality_dry_run() {
     local temp_config="$1"
     local link
@@ -2487,7 +2597,7 @@ install_reality() {
               "network": "tcp",
               "security": "reality",
               "realitySettings": {
-                "dest": ("127.0.0.1:" + $defender_port),
+                "target": ("127.0.0.1:" + $defender_port),
                 "show": false,
                 "xver": 0,
                 "spiderX": env.REALITY_JQ_SPIDER_X,
@@ -2531,6 +2641,11 @@ install_reality() {
     fi
 
     if [[ "${REALITY_DRY_RUN:-false}" == "true" ]]; then
+        write_test_config_out "$tmp" || {
+            rm -f "$tmp"
+            [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
+            return 1
+        }
         print_reality_dry_run "$tmp"
         rm -f "$tmp"
         [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
@@ -2557,7 +2672,7 @@ install_reality() {
 
 print_reality_result() {
     local missing_mode="${1:-skip}"
-    local state_exists link port defender_port uuid server_name public_key short_id spider_x private_hint flow
+    local state_exists link port defender_port uuid server_name public_key short_id spider_x private_hint flow target
     local endpoint_pair address link_port
 
     if [[ ! -f "$STATE_FILE" ]]; then
@@ -2580,12 +2695,18 @@ print_reality_result() {
     spider_x="$(jq -r ".${REALITY_STATE_KEY}.spider_x // \"/\"" "$STATE_FILE" 2>/dev/null)"
     private_hint="$(jq -r ".${REALITY_STATE_KEY}.private_key // empty" "$STATE_FILE" 2>/dev/null)"
     flow="$(jq -r ".${REALITY_STATE_KEY}.flow // \"$REALITY_FLOW_DEFAULT\"" "$STATE_FILE" 2>/dev/null)"
+    target="$(jq -r --arg tag "$REALITY_TAG" '.inbounds[]? | select(.tag == $tag).streamSettings.realitySettings.target // .streamSettings.realitySettings.dest // empty' "$CONFIG_FILE" 2>/dev/null)"
     endpoint_pair="$(link_endpoint_for_tag "$port" "$REALITY_TAG" "$REALITY_STATE_KEY")"
     IFS=$'\t' read -r address link_port <<<"$endpoint_pair"
 
     echo -e "\n${YELLOW}--- VLESS TCP REALITY ---${PLAIN}"
     echo -e "入口端口: ${port}"
+    [[ -n "$target" ]] && echo -e "Target: ${target}"
     echo -e "Defender: 127.0.0.1:${defender_port} -> ${server_name}:443"
+    if [[ "$port" != "443" ]]; then
+        echo -e "提示: 当前 Reality 端口不是 443，最新 Xray 可能会提示非 443 warning。"
+        echo -e "提示: 如果追求更自然的 TLS/REALITY 行为，可以手动指定 443，但要确保 443 未被其它服务占用。"
+    fi
     [[ -n "$link" ]] && echo -e "VLESS URL / v2rayN / sing-box 通用链接: ${link}"
     if [[ "${CURRENT_LINK_VIEW_MODE:-dual}" == "ipv6" ]] && ! should_print_ipv6_link "ipv6" "$REALITY_TAG" "$REALITY_STATE_KEY"; then
         print_ipv6_status_hint "$REALITY_TAG" "$REALITY_STATE_KEY"
@@ -2647,7 +2768,11 @@ remove_reality_config() {
 }
 
 random_xhttp_path() {
-    printf '/api/%s' "$(openssl rand -hex 8)"
+    if command -v openssl >/dev/null 2>&1; then
+        printf '/api/%s' "$(openssl rand -hex 8)"
+    else
+        printf '/api/test%s' "$RANDOM"
+    fi
 }
 
 validate_xhttp_path() {
@@ -3070,10 +3195,11 @@ configure_vless_xhttp_finalmask() {
 
         read -r -p "XHTTP path (回车随机): " input
         XHTTP_PATH="${input:-$(random_xhttp_path)}"
-        read -r -p "开启 FinalMask? [Y/n]: " input
+        info "[FinalMask] 属于高级兼容功能，客户端不兼容时请关闭。"
+        read -r -p "开启 FinalMask? [y/N]: " input
         case "${input,,}" in
-            n | no) XHTTP_FINALMASK_ENABLED="false" ;;
-            *) XHTTP_FINALMASK_ENABLED="true" ;;
+            y | yes) XHTTP_FINALMASK_ENABLED="true" ;;
+            *) XHTTP_FINALMASK_ENABLED="false" ;;
         esac
         if [[ "$XHTTP_FINALMASK_ENABLED" == "true" ]]; then
             ask_finalmask_config || return 1
@@ -3093,7 +3219,7 @@ configure_vless_xhttp_finalmask() {
             XHTTP_PORT="$(random_free_port 20000 50000)" || return 1
         fi
         XHTTP_PATH="${XHTTP_PATH_REQUEST:-$(random_xhttp_path)}"
-        XHTTP_FINALMASK_ENABLED="${XHTTP_FINALMASK_REQUEST:-true}"
+        XHTTP_FINALMASK_ENABLED="${XHTTP_FINALMASK_REQUEST:-false}"
     fi
 
     validate_xhttp_path "$XHTTP_PATH" || {
@@ -3319,6 +3445,11 @@ install_vless_xhttp_finalmask() {
     fi
 
     if [[ "${XHTTP_DRY_RUN:-false}" == "true" ]]; then
+        write_test_config_out "$tmp" || {
+            rm -f "$tmp"
+            [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
+            return 1
+        }
         print_xhttp_dry_run "$tmp"
         rm -f "$tmp"
         [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
@@ -3515,6 +3646,54 @@ advanced_profile_has_finalmask() {
     [[ "$1" == "fullstack" ]]
 }
 
+advanced_profile_has_fallback_limit() {
+    [[ "$1" == "xhttp-reality" || "$1" == "enc-reality" || "$1" == "fullstack" ]]
+}
+
+random_limit_number() {
+    local min="$1"
+    local max="$2"
+    local span rand
+
+    ((min <= max)) || return 1
+    span=$((max - min + 1))
+    if command -v openssl >/dev/null 2>&1; then
+        rand=$((16#$(openssl rand -hex 4)))
+    else
+        rand=$RANDOM
+    fi
+    printf '%s' "$((min + rand % span))"
+}
+
+build_advanced_fallback_limit_json() {
+    local direction="${1:-upload}"
+    local after_bytes bytes_per_sec burst_bytes_per_sec
+
+    case "$direction" in
+        upload)
+            after_bytes="$(random_limit_number 0 1048576)" || return 1
+            bytes_per_sec="$(random_limit_number 65536 262144)" || return 1
+            burst_bytes_per_sec="$(random_limit_number 0 131072)" || return 1
+            ;;
+        download)
+            after_bytes="$(random_limit_number 0 10485760)" || return 1
+            bytes_per_sec="$(random_limit_number 131072 524288)" || return 1
+            burst_bytes_per_sec="$(random_limit_number 0 262144)" || return 1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+
+    jq -cn --argjson after_bytes "$after_bytes" \
+        --argjson bytes_per_sec "$bytes_per_sec" \
+        --argjson burst_bytes_per_sec "$burst_bytes_per_sec" '{
+      afterBytes: $after_bytes,
+      bytesPerSec: $bytes_per_sec,
+      burstBytesPerSec: $burst_bytes_per_sec
+    }'
+}
+
 remove_inbound_by_tag() {
     local tag="$1"
     local tmp
@@ -3660,7 +3839,7 @@ build_reality_settings_json() {
     MSYS2_ENV_CONV_EXCL="*" ADVANCED_SPIDER_X="$spider_x" jq -cn --arg sni "$sni" \
         --arg private_key "$private_key" \
         --argjson short_ids "$short_ids_json" '{
-        dest: ($sni + ":443"),
+        target: ($sni + ":443"),
         show: false,
         xver: 0,
         spiderX: env.ADVANCED_SPIDER_X,
@@ -3696,8 +3875,15 @@ print_advanced_compat_hint() {
             ;;
     esac
     echo "  - 该高级组合默认不启用 Vision flow；如需开启，可使用 --flow vision。"
+    echo "  - 如需更保守的回落限制，可使用 --fallback-limit conservative；它只是限流，不是绝对安全开关。"
     echo "  - privateKey 是服务端字段，不要填入客户端，也不要泄露。"
     echo "  - publicKey/pbk 是客户端字段。"
+}
+
+print_advanced_target_risk_notice() {
+    diag_warn "未通过 REALITY 认证的流量会被转发到 target。"
+    diag_warn "不建议把 CDN、公共代理敏感目标或异常目标作为默认 target。"
+    diag_warn "非 443 target 可能触发 Xray 新版本 warning。"
 }
 
 configure_advanced_profile() {
@@ -3733,6 +3919,7 @@ configure_advanced_profile() {
 
     ask_or_random_reality_sni "${ADVANCED_SNI_REQUEST:-}" ADVANCED_SERVER_NAME || return 1
     info "[高级组合] REALITY target 使用 ${ADVANCED_SERVER_NAME}:443，security=reality，不使用 TLS 证书。"
+    print_advanced_target_risk_notice
     if ! test_reality_target_tls "$ADVANCED_SERVER_NAME"; then
         err "[高级组合] ${ADVANCED_SERVER_NAME}:443 TLS 探测失败。"
         if [[ "$mode" == "interactive" ]]; then
@@ -3757,6 +3944,22 @@ configure_advanced_profile() {
         return 1
     }
     [[ "$ADVANCED_FLOW" == "$REALITY_FLOW_DEFAULT" ]] && print_advanced_flow_warning
+
+    ADVANCED_FALLBACK_LIMIT_MODE="${ADVANCED_FALLBACK_LIMIT_REQUEST:-off}"
+    case "$ADVANCED_FALLBACK_LIMIT_MODE" in
+        off | conservative) ;;
+        *)
+            err "[高级组合] --fallback-limit 仅支持 off 或 conservative。"
+            return 1
+            ;;
+    esac
+    ADVANCED_FALLBACK_LIMIT_UPLOAD_JSON="null"
+    ADVANCED_FALLBACK_LIMIT_DOWNLOAD_JSON="null"
+    if [[ "$ADVANCED_FALLBACK_LIMIT_MODE" == "conservative" ]]; then
+        ADVANCED_FALLBACK_LIMIT_UPLOAD_JSON="$(build_advanced_fallback_limit_json upload)" || return 1
+        ADVANCED_FALLBACK_LIMIT_DOWNLOAD_JSON="$(build_advanced_fallback_limit_json download)" || return 1
+        info "[高级组合] 已启用 conservative fallback limit。"
+    fi
 
     ADVANCED_UUID="$(generate_uuid)" || {
         err "[高级组合] UUID 生成失败。"
@@ -3791,16 +3994,17 @@ configure_advanced_profile() {
 
     if advanced_profile_has_finalmask "$kind"; then
         if [[ "$mode" == "interactive" ]]; then
-            read -r -p "开启 FinalMask? [Y/n]: " input
+            info "[FinalMask] 属于高级兼容功能，客户端不兼容时请关闭。"
+            read -r -p "开启 FinalMask? [y/N]: " input
             case "${input,,}" in
-                n | no) ADVANCED_FINALMASK_ENABLED="false" ;;
-                *) ADVANCED_FINALMASK_ENABLED="true" ;;
+                y | yes) ADVANCED_FINALMASK_ENABLED="true" ;;
+                *) ADVANCED_FINALMASK_ENABLED="false" ;;
             esac
             if [[ "$ADVANCED_FINALMASK_ENABLED" == "true" ]]; then
                 ask_finalmask_config || return 1
             fi
         else
-            ADVANCED_FINALMASK_ENABLED="${ADVANCED_FINALMASK_REQUEST:-true}"
+            ADVANCED_FINALMASK_ENABLED="${ADVANCED_FINALMASK_REQUEST:-false}"
         fi
         case "${ADVANCED_FINALMASK_ENABLED,,}" in
             true | on | yes | y | 1) ADVANCED_FINALMASK_ENABLED="true" ;;
@@ -3907,6 +4111,7 @@ state_set_advanced_profile() {
     local kind="$1"
     local state_key tmp link timestamp finalmask_json hash32
     local finalmask_mode finalmask_preset finalmask_summary flow
+    local fallback_limit_mode fallback_limit_upload fallback_limit_download
 
     state_key="$(advanced_profile_state_key "$kind")" || return 1
     link="$(build_advanced_share_link "$kind" || true)"
@@ -3917,6 +4122,9 @@ state_set_advanced_profile() {
     finalmask_mode="${ADVANCED_FINALMASK_MODE:-off}"
     finalmask_preset="${ADVANCED_FINALMASK_PRESET:-none}"
     finalmask_summary="${ADVANCED_FINALMASK_SUMMARY:-off}"
+    fallback_limit_mode="${ADVANCED_FALLBACK_LIMIT_MODE:-off}"
+    fallback_limit_upload="${ADVANCED_FALLBACK_LIMIT_UPLOAD_JSON:-null}"
+    fallback_limit_download="${ADVANCED_FALLBACK_LIMIT_DOWNLOAD_JSON:-null}"
     if advanced_profile_has_finalmask "$kind" && [[ "$ADVANCED_FINALMASK_ENABLED" == "true" ]]; then
         finalmask_json="$ADVANCED_FINALMASK_JSON"
         if [[ "$finalmask_mode" == "off" || "$finalmask_preset" == "none" || "$finalmask_summary" == "off" || -z "$finalmask_summary" ]]; then
@@ -3951,6 +4159,9 @@ state_set_advanced_profile() {
         --arg finalmask_preset "$finalmask_preset" \
         --arg finalmask_summary "$finalmask_summary" \
         --argjson finalmask_json "$finalmask_json" \
+        --arg fallback_limit_mode "$fallback_limit_mode" \
+        --argjson fallback_limit_upload "$fallback_limit_upload" \
+        --argjson fallback_limit_download "$fallback_limit_download" \
         --arg hash32 "$hash32" \
         --arg listen_scope "ipv4" \
         --arg created_at "$timestamp" \
@@ -3980,6 +4191,9 @@ state_set_advanced_profile() {
           .[$state_key].client_rtt = $client_rtt |
           .[$state_key].server_ticket = $server_ticket
         else . end |
+        .[$state_key].fallback_limit_mode = $fallback_limit_mode |
+        .[$state_key].fallback_limit_upload = $fallback_limit_upload |
+        .[$state_key].fallback_limit_download = $fallback_limit_download |
         if $kind == "fullstack" then
           .[$state_key].finalmask_enabled = ($finalmask_enabled == "true") |
           .[$state_key].finalmask_mode = $finalmask_mode |
@@ -3997,9 +4211,13 @@ print_advanced_dry_run() {
     local kind="$1"
     local temp_config="$2"
     local link name
+    local fallback_limit_mode fallback_limit_upload fallback_limit_download
 
     name="$(advanced_profile_name "$kind")"
     link="$(build_advanced_share_link "$kind" || true)"
+    fallback_limit_mode="${ADVANCED_FALLBACK_LIMIT_MODE:-off}"
+    fallback_limit_upload="${ADVANCED_FALLBACK_LIMIT_UPLOAD_JSON:-null}"
+    fallback_limit_download="${ADVANCED_FALLBACK_LIMIT_DOWNLOAD_JSON:-null}"
     echo -e "\n${YELLOW}${name} dry-run 预览${PLAIN}"
     echo "----------------------------------------"
     echo "入口端口: ${ADVANCED_PORT}"
@@ -4007,6 +4225,11 @@ print_advanced_dry_run() {
     echo "SNI: ${ADVANCED_SERVER_NAME}"
     echo "REALITY target: ${ADVANCED_SERVER_NAME}:443"
     echo "Flow: ${ADVANCED_FLOW:-$REALITY_FLOW_NONE}"
+    advanced_profile_has_fallback_limit "$kind" && echo "Fallback limit: ${fallback_limit_mode}"
+    if advanced_profile_has_fallback_limit "$kind" && [[ "$fallback_limit_mode" == "conservative" ]]; then
+        echo "Fallback upload: ${fallback_limit_upload}"
+        echo "Fallback download: ${fallback_limit_download}"
+    fi
     echo "ShortID: $(mask_value "$REALITY_DEFAULT_SHORT_ID" 2)"
     echo "PublicKey: $(mask_value "$REALITY_PUBLIC_KEY" 6)"
     advanced_profile_has_encryption "$kind" && echo "VLESS Encryption: $(mask_value "$VLESS_ENCRYPTION" 8)"
@@ -4027,6 +4250,7 @@ print_advanced_dry_run() {
 install_advanced_profile() {
     local kind="$1"
     local tag name tmp config_source base_tmp network finalmask_json flow
+    local fallback_limit_mode fallback_limit_upload fallback_limit_download
 
     tag="$(advanced_profile_tag "$kind")" || return 1
     name="$(advanced_profile_name "$kind")" || return 1
@@ -4049,6 +4273,9 @@ install_advanced_profile() {
         finalmask_json="$ADVANCED_FINALMASK_JSON"
     fi
     flow="$(flow_config_value "${ADVANCED_FLOW:-$REALITY_FLOW_NONE}" || true)"
+    fallback_limit_mode="${ADVANCED_FALLBACK_LIMIT_MODE:-off}"
+    fallback_limit_upload="${ADVANCED_FALLBACK_LIMIT_UPLOAD_JSON:-null}"
+    fallback_limit_download="${ADVANCED_FALLBACK_LIMIT_DOWNLOAD_JSON:-null}"
 
     tmp="$(mktemp)" || return 1
     if ! MSYS2_ENV_CONV_EXCL="*" ADVANCED_XHTTP_PATH="${ADVANCED_PATH:-}" ADVANCED_SPIDER_X="${ADVANCED_SPIDER_X:-/}" jq --arg tag "$tag" \
@@ -4063,7 +4290,10 @@ install_advanced_profile() {
         --arg has_encryption "$(advanced_profile_has_encryption "$kind" && printf true || printf false)" \
         --arg has_xhttp "$(advanced_profile_has_xhttp "$kind" && printf true || printf false)" \
         --arg finalmask_enabled "$(advanced_profile_has_finalmask "$kind" && printf '%s' "${ADVANCED_FINALMASK_ENABLED:-false}" || printf false)" \
-        --argjson finalmask_json "$finalmask_json" '
+        --argjson finalmask_json "$finalmask_json" \
+        --arg fallback_limit_mode "$fallback_limit_mode" \
+        --argjson fallback_limit_upload "$fallback_limit_upload" \
+        --argjson fallback_limit_download "$fallback_limit_download" '
         .inbounds = ((.inbounds // []) | map(select(.tag != $tag))) |
         .inbounds += [({
           "tag": $tag,
@@ -4083,7 +4313,7 @@ install_advanced_profile() {
             "network": $network,
             "security": "reality",
             "realitySettings": {
-              "dest": ($sni + ":443"),
+              "target": ($sni + ":443"),
               "show": false,
               "xver": 0,
               "spiderX": env.ADVANCED_SPIDER_X,
@@ -4097,6 +4327,10 @@ install_advanced_profile() {
           else . end |
           if $finalmask_enabled == "true" then
             .finalmask = $finalmask_json
+          else . end |
+          if $fallback_limit_mode == "conservative" then
+            .realitySettings.limitFallbackUpload = $fallback_limit_upload |
+            .realitySettings.limitFallbackDownload = $fallback_limit_download
           else . end),
           "sniffing": {
             "enabled": true,
@@ -4111,6 +4345,11 @@ install_advanced_profile() {
     fi
 
     if [[ "${ADVANCED_DRY_RUN:-false}" == "true" ]]; then
+        write_test_config_out "$tmp" || {
+            rm -f "$tmp"
+            [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
+            return 1
+        }
         print_advanced_dry_run "$kind" "$tmp"
         rm -f "$tmp"
         [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
@@ -4140,7 +4379,8 @@ install_advanced_profile() {
 print_advanced_profile_result() {
     local kind="$1"
     local missing_mode="${2:-skip}"
-    local state_key state_exists link port uuid path encryption server_name public_key short_id spider_x fm_enabled fm_json endpoint_pair flow
+    local state_key state_exists link port uuid path encryption server_name public_key short_id spider_x fm_enabled fm_json endpoint_pair flow target
+    local fallback_limit_mode fallback_limit_upload fallback_limit_download
     local fm_mode fm_preset fm_summary
     local address link_port name transport
 
@@ -4172,14 +4412,24 @@ print_advanced_profile_result() {
     fm_preset="$(jq -r ".${state_key}.finalmask_preset // \"none\"" "$STATE_FILE" 2>/dev/null)"
     fm_summary="$(jq -r ".${state_key}.finalmask_summary // empty" "$STATE_FILE" 2>/dev/null)"
     fm_json="$(jq -c ".${state_key}.finalmask_json // empty" "$STATE_FILE" 2>/dev/null)"
+    fallback_limit_mode="$(jq -r ".${state_key}.fallback_limit_mode // \"off\"" "$STATE_FILE" 2>/dev/null)"
+    fallback_limit_upload="$(jq -c ".${state_key}.fallback_limit_upload // null" "$STATE_FILE" 2>/dev/null)"
+    fallback_limit_download="$(jq -c ".${state_key}.fallback_limit_download // null" "$STATE_FILE" 2>/dev/null)"
+    target=""
+    [[ -n "$server_name" ]] && target="${server_name}:443"
     endpoint_pair="$(link_endpoint_for_tag "$port" "$(advanced_profile_tag "$kind")" "$state_key")"
     IFS=$'\t' read -r address link_port <<<"$endpoint_pair"
 
     echo -e "\n${YELLOW}--- ${name} ---${PLAIN}"
     echo -e "入口端口: ${port}"
     advanced_profile_has_xhttp "$kind" && echo -e "Path: ${path}"
-    echo -e "REALITY target: ${server_name}:443"
+    [[ -n "$target" ]] && echo -e "REALITY target: ${target}"
     echo -e "Flow: ${flow}"
+    advanced_profile_has_fallback_limit "$kind" && echo -e "Fallback limit: ${fallback_limit_mode}"
+    if advanced_profile_has_fallback_limit "$kind" && [[ "$fallback_limit_mode" == "conservative" ]]; then
+        [[ -n "$fallback_limit_upload" && "$fallback_limit_upload" != "null" ]] && echo -e "Fallback upload: ${fallback_limit_upload}"
+        [[ -n "$fallback_limit_download" && "$fallback_limit_download" != "null" ]] && echo -e "Fallback download: ${fallback_limit_download}"
+    fi
     advanced_profile_has_finalmask "$kind" && echo -e "FinalMask: $([[ "$fm_enabled" == "true" ]] && printf on || printf 'off（未启用 FinalMask）')"
     if advanced_profile_has_finalmask "$kind"; then
         echo -e "FinalMask 模式: ${fm_mode}"
@@ -8431,6 +8681,9 @@ doctor_reality_port() {
     else
         diag_warn "Reality 主端口未监听: ${port}；如服务未运行，请执行 systemctl restart xray"
     fi
+    if [[ "$port" != "443" ]]; then
+        diag_warn "Reality 主端口当前不是 443，最新 Xray 可能会提示非 443 warning。"
+    fi
 
     if port_listening_localhost "$defender_port"; then
         diag_ok "Reality defender 端口仅本地监听: 127.0.0.1:${defender_port}"
@@ -8482,7 +8735,7 @@ doctor_reality_output() {
 }
 
 doctor_reality() {
-    local r_in d_in port defender_port sni flow dest short_count state_flow state_link link_has_flow
+    local r_in d_in port defender_port sni flow target short_count state_flow state_link link_has_flow
 
     echo -e "\n${YELLOW}Reality 诊断${PLAIN}"
     echo "----------------------------------------"
@@ -8501,7 +8754,7 @@ doctor_reality() {
     defender_port="$(echo "$d_in" | jq -r '.port // empty')"
     sni="$(echo "$r_in" | jq -r '.streamSettings.realitySettings.serverNames[0] // empty')"
     flow="$(echo "$r_in" | jq -r '.settings.clients[0].flow // empty')"
-    dest="$(echo "$r_in" | jq -r '.streamSettings.realitySettings.dest // empty')"
+    target="$(echo "$r_in" | jq -r '.streamSettings.realitySettings.target // .streamSettings.realitySettings.dest // empty')"
     short_count="$(echo "$r_in" | jq -r '.streamSettings.realitySettings.shortIds | length')"
 
     echo "$r_in" | jq -e '.protocol == "vless" and .streamSettings.network == "tcp" and .streamSettings.security == "reality"' >/dev/null && diag_ok "Reality inbound 协议/传输/安全类型正确" || diag_fail "Reality inbound 协议/传输/安全类型异常"
@@ -8512,6 +8765,9 @@ doctor_reality() {
         diag_warn "普通 VLESS TCP REALITY 缺少 Vision flow，建议重新执行 ike reality install 或运行 migrate。"
     else
         diag_fail "Reality flow 异常: ${flow}"
+    fi
+    if [[ "$port" != "443" ]]; then
+        diag_warn "Reality 主端口当前不是 443，最新 Xray 可能会提示非 443 warning。"
     fi
     if [[ -f "$STATE_FILE" ]]; then
         state_flow="$(jq -r ".${REALITY_STATE_KEY}.flow // empty" "$STATE_FILE" 2>/dev/null)"
@@ -8527,7 +8783,7 @@ doctor_reality() {
     echo "$r_in" | jq -e '(.streamSettings.realitySettings.privateKey // "") != ""' >/dev/null && diag_ok "Reality privateKey 已写入服务端配置（默认不输出值）" || diag_fail "Reality privateKey 缺失"
     [[ -n "$sni" ]] && diag_ok "Reality serverNames 已配置" || diag_fail "Reality serverNames 缺失"
     ((short_count == 8)) && diag_ok "Reality shortIds 数量为 8" || diag_warn "Reality shortIds 数量为 ${short_count}"
-    [[ "$dest" == "127.0.0.1:${defender_port}" ]] && diag_ok "Reality dest 指向 defender: ${dest}" || diag_fail "Reality dest 异常: ${dest}"
+    [[ "$target" == "127.0.0.1:${defender_port}" ]] && diag_ok "Reality target 指向 defender: ${target}" || diag_fail "Reality target 异常: ${target}"
     echo "$d_in" | jq -e --arg sni "$sni" '.listen == "127.0.0.1" and .protocol == "dokodemo-door" and .settings.address == $sni and .settings.port == 443 and .settings.network == "tcp"' >/dev/null && diag_ok "Reality defender 配置正确" || diag_fail "Reality defender 配置异常"
     doctor_reality_routing "$sni"
     doctor_reality_state
@@ -8580,7 +8836,8 @@ doctor_xhttp() {
 
 doctor_advanced_profile() {
     local kind="$1"
-    local tag state_key name network in path state_link config_has_fm state_enabled fm port
+    local tag state_key name network in path state_link config_has_fm state_enabled fm port target
+    local fallback_limit_mode fallback_limit_upload fallback_limit_download
     local config_flow state_flow link_has_flow
 
     tag="$(advanced_profile_tag "$kind")" || return 1
@@ -8603,7 +8860,8 @@ doctor_advanced_profile() {
         diag_fail "inbound 协议/传输/REALITY 配置异常"
     echo "$in" | jq -e '(.settings.clients[0].id // "") != ""' >/dev/null && diag_ok "UUID 存在" || diag_fail "UUID 缺失"
     echo "$in" | jq -e '(.streamSettings.realitySettings.privateKey // "") != ""' >/dev/null && diag_ok "privateKey 已写入服务端配置（默认不输出值）" || diag_fail "privateKey 缺失"
-    echo "$in" | jq -e '(.streamSettings.realitySettings.serverNames[0] // "") != "" and (.streamSettings.realitySettings.dest // "" | endswith(":443"))' >/dev/null &&
+    target="$(echo "$in" | jq -r '.streamSettings.realitySettings.target // .streamSettings.realitySettings.dest // empty')"
+    echo "$in" | jq -e '(.streamSettings.realitySettings.serverNames[0] // "") != "" and ((.streamSettings.realitySettings.target // .streamSettings.realitySettings.dest // "") | endswith(":443"))' >/dev/null &&
         diag_ok "REALITY target/serverNames 已配置" ||
         diag_fail "REALITY target/serverNames 配置异常"
     echo "$in" | jq -e '(.streamSettings.realitySettings.shortIds | length) == 8' >/dev/null && diag_ok "shortIds 数量为 8" || diag_warn "shortIds 数量不是 8"
@@ -8645,6 +8903,18 @@ doctor_advanced_profile() {
         diag_ok "Vision flow 未启用（高级组合默认）"
     fi
     cnblock_reality_risk_notice
+    if advanced_profile_has_fallback_limit "$kind"; then
+        fallback_limit_mode="$(jq -r ".${state_key}.fallback_limit_mode // \"off\"" "$STATE_FILE" 2>/dev/null)"
+        fallback_limit_upload="$(jq -c ".${state_key}.fallback_limit_upload // null" "$STATE_FILE" 2>/dev/null)"
+        fallback_limit_download="$(jq -c ".${state_key}.fallback_limit_download // null" "$STATE_FILE" 2>/dev/null)"
+        if [[ "$fallback_limit_mode" == "conservative" ]]; then
+            diag_ok "Fallback limit 已启用: conservative"
+            diag_info "Fallback upload: ${fallback_limit_upload}"
+            diag_info "Fallback download: ${fallback_limit_download}"
+        else
+            diag_ok "Fallback limit 未启用"
+        fi
+    fi
     if advanced_profile_has_finalmask "$kind"; then
         state_enabled="$(jq -r ".${state_key}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
         config_has_fm="$(echo "$in" | jq -r '.streamSettings | has("finalmask")')"
@@ -9074,7 +9344,8 @@ run_preflight_command() {
 
 run_xray_command() {
     local action="${1:-version}"
-    local version="latest"
+    local version="${XRAY_VERSION_REQUEST:-${XRAY_VERSION:-latest}}"
+    local channel="${XRAY_CHANNEL_REQUEST:-${XRAY_CHANNEL:-stable}}"
     local dry_run="false"
     local restart="false"
 
@@ -9097,6 +9368,18 @@ run_xray_command() {
                 }
                 shift 2
                 ;;
+            --xray-channel)
+                channel="${2:-}"
+                [[ -n "$channel" ]] || {
+                    err "[Xray] --xray-channel 需要 stable 或 prerelease"
+                    return 1
+                }
+                channel="$(normalize_xray_channel "$channel")" || {
+                    err "[Xray] --xray-channel 仅支持 stable 或 prerelease"
+                    return 1
+                }
+                shift 2
+                ;;
             --dry-run)
                 dry_run="true"
                 shift
@@ -9105,11 +9388,11 @@ run_xray_command() {
                 restart="true"
                 shift
                 ;;
-            *)
-                err "[失败] 未知 xray 参数: $1"
-                echo "用法: ike xray version | ike xray upgrade [--version vX.Y.Z] [--dry-run] [--restart]"
-                return 1
-                ;;
+        *)
+            err "[失败] 未知 xray 参数: $1"
+            show_xray_usage
+            return 1
+            ;;
         esac
     done
 
@@ -9118,11 +9401,13 @@ run_xray_command() {
             print_xray_version_summary
             ;;
         upgrade)
-            upgrade_xray_core "$version" "$dry_run" "$restart"
+            XRAY_VERSION_REQUEST="$version"
+            XRAY_CHANNEL_REQUEST="$channel"
+            upgrade_xray_core "$version" "$channel" "$dry_run" "$restart"
             ;;
         *)
             err "[失败] 未知 xray 命令: $action"
-            echo "用法: ike xray version | ike xray upgrade [--version vX.Y.Z] [--dry-run] [--restart]"
+            show_xray_usage
             return 1
             ;;
     esac
@@ -9422,7 +9707,32 @@ detect_legacy_tags() {
 
 normalize_config_schema() {
     [[ -f "$CONFIG_FILE" ]] || return 0
-    jq empty "$CONFIG_FILE" >/dev/null || return 1
+    local tmp
+
+    command -v jq >/dev/null 2>&1 || return 1
+    tmp="$(mktemp)" || return 1
+    if ! jq '
+      def normalize_reality_target:
+        if (.streamSettings? | type) == "object" and .streamSettings.security == "reality" and (.streamSettings.realitySettings? | type) == "object" then
+          .streamSettings.realitySettings.target = (.streamSettings.realitySettings.target // .streamSettings.realitySettings.dest // empty) |
+          del(.streamSettings.realitySettings.dest)
+        else
+          .
+        end;
+      if (.inbounds? | type) == "array" then
+        .inbounds = [.inbounds[] | normalize_reality_target]
+      else
+        .
+      end
+    ' "$CONFIG_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    mv "$tmp" "$CONFIG_FILE" || {
+        rm -f "$tmp"
+        return 1
+    }
+    rm -f "$tmp"
 }
 
 run_migrate_command() {
@@ -9546,6 +9856,18 @@ show_reality_usage() {
 EOF
 }
 
+show_xray_usage() {
+    cat <<'EOF'
+用法:
+  ike xray version
+  ike xray upgrade [--version vX.Y.Z] [--xray-channel stable|prerelease] [--dry-run] [--restart]
+
+环境变量:
+  XRAY_VERSION=vX.Y.Z
+  XRAY_CHANNEL=stable|prerelease
+EOF
+}
+
 show_xhttp_usage() {
     cat <<'EOF'
 用法:
@@ -9651,7 +9973,7 @@ run_xhttp_command() {
             shift
             XHTTP_PORT_REQUEST=""
             XHTTP_PATH_REQUEST=""
-            XHTTP_FINALMASK_REQUEST="true"
+            XHTTP_FINALMASK_REQUEST="false"
             FINALMASK_PRESET_REQUEST=""
             FINALMASK_JSON_REQUEST=""
             FINALMASK_PACKETS_REQUEST=""
@@ -9755,7 +10077,7 @@ show_advanced_profile_usage() {
         xhttp-reality)
             cat <<'EOF'
 用法:
-  ike xhttp-reality install [--port PORT] [--path /path] [--sni DOMAIN] [--flow none|vision] [--dry-run] [--yes]
+  ike xhttp-reality install [--port PORT] [--path /path] [--sni DOMAIN] [--flow none|vision] [--fallback-limit off|conservative] [--dry-run] [--yes]
   ike xhttp-reality show
   ike xhttp-reality remove
   ike view xhttp-reality
@@ -9764,7 +10086,7 @@ EOF
         enc-reality)
             cat <<'EOF'
 用法:
-  ike enc-reality install [--port PORT] [--sni DOMAIN] [--flow none|vision] [--dry-run] [--yes] [--auth x25519|mlkem768]
+  ike enc-reality install [--port PORT] [--sni DOMAIN] [--flow none|vision] [--fallback-limit off|conservative] [--dry-run] [--yes] [--auth x25519|mlkem768]
   ike enc-reality show
   ike enc-reality remove
   ike view enc-reality
@@ -9773,7 +10095,7 @@ EOF
         fullstack)
             cat <<'EOF'
 用法:
-  ike fullstack install [--port PORT] [--path /path] [--sni DOMAIN] [--flow none|vision] [--finalmask on|off] [--finalmask-preset conservative|balanced|aggressive] [--fm-length 100-200] [--fm-delay 10-20] [--fm-max-split 3-6] [--finalmask-json JSON] [--dry-run] [--yes] [--auth x25519|mlkem768]
+  ike fullstack install [--port PORT] [--path /path] [--sni DOMAIN] [--flow none|vision] [--fallback-limit off|conservative] [--finalmask on|off] [--finalmask-preset conservative|balanced|aggressive] [--fm-length 100-200] [--fm-delay 10-20] [--fm-max-split 3-6] [--finalmask-json JSON] [--dry-run] [--yes] [--auth x25519|mlkem768]
   ike fullstack show
   ike fullstack remove
   ike view fullstack
@@ -9795,9 +10117,10 @@ run_advanced_profile_command() {
             ADVANCED_PORT_REQUEST=""
             ADVANCED_PATH_REQUEST=""
             ADVANCED_SNI_REQUEST=""
-            ADVANCED_FINALMASK_REQUEST="true"
+            ADVANCED_FINALMASK_REQUEST="false"
             ADVANCED_FINALMASK_SPECIFIED="false"
             ADVANCED_FLOW="$REALITY_FLOW_NONE"
+            ADVANCED_FALLBACK_LIMIT_REQUEST="off"
             FINALMASK_PRESET_REQUEST=""
             FINALMASK_JSON_REQUEST=""
             FINALMASK_PACKETS_REQUEST=""
@@ -9831,6 +10154,17 @@ run_advanced_profile_command() {
                             err "[高级组合] --flow 仅支持 none 或 vision。"
                             return 1
                         fi
+                        shift 2
+                        ;;
+                    --fallback-limit)
+                        ADVANCED_FALLBACK_LIMIT_REQUEST="${2:-}"
+                        case "${ADVANCED_FALLBACK_LIMIT_REQUEST}" in
+                            off | conservative) ;;
+                            *)
+                                err "[高级组合] --fallback-limit 仅支持 off 或 conservative。"
+                                return 1
+                                ;;
+                        esac
                         shift 2
                         ;;
                     --finalmask)
@@ -9936,6 +10270,211 @@ run_forward_command() {
     run_tunnel_command "$@"
 }
 
+setup_test_config_generation_env() {
+    local root="${IKE_TEST_ROOT:-}"
+    local root_parent
+    local detected_xray=""
+
+    if [[ -z "$root" ]]; then
+        root_parent="${IKE_TEST_TMP_PARENT:-${PWD:-.}/.tmp}"
+        mkdir -p "$root_parent" || return 1
+        root="$(mktemp -d "${root_parent}/config-generation.XXXXXX")" || return 1
+        IKE_TEST_ROOT="$root"
+    fi
+    mkdir -p "$root" || return 1
+
+    CONFIG_DIR="${root}/etc/xray"
+    CONFIG_FILE="${CONFIG_DIR}/config.json"
+    STATE_FILE="${CONFIG_DIR}/installer-state.json"
+    ASSET_DIR="${root}/share/xray"
+    INSTALLER_DIR="${root}/share/ike"
+    INSTALLER_PATH="${INSTALLER_DIR}/install.sh"
+    SHORTCUT_PATH="${root}/bin/ike"
+    LEGACY_SHORTCUT_PATH="${root}/bin/sb"
+    mkdir -p "$CONFIG_DIR" "$ASSET_DIR" "$INSTALLER_DIR" "${root}/bin" || return 1
+    mkdir -p "${root}/tmp" || return 1
+    export TMPDIR="${root}/tmp"
+
+    if [[ -n "${XRAY_BIN:-}" ]]; then
+        BIN_PATH="$XRAY_BIN"
+    elif detected_xray="$(command -v xray 2>/dev/null)"; then
+        BIN_PATH="$detected_xray"
+    else
+        BIN_PATH="${root}/bin/xray-missing"
+    fi
+
+    IKE_CONFIG_OUT="${IKE_CONFIG_OUT:-${root}/config.json}"
+    IKE_TEST_MODE="1"
+    REALITY_SKIP_TLS_TEST="1"
+    XRAY_ONECLICK_YES="1"
+    CURRENT_LINK_VIEW_MODE="ipv4"
+    IPV4_HOST="${IPV4_HOST:-203.0.113.10}"
+    init_config || return 1
+    init_state || return 1
+}
+
+run_test_config_generate_command() {
+    local profile="${1:-}"
+    local port="" defender_port="" path="" sni="www.microsoft.com"
+    local finalmask="" finalmask_preset="balanced" fallback_limit="off"
+    local kind=""
+
+    [[ -n "$profile" ]] || {
+        err "[test] usage: test-config-generate PROFILE [--output FILE]"
+        return 1
+    }
+    shift
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --output)
+                IKE_CONFIG_OUT="${2:-}"
+                [[ -n "$IKE_CONFIG_OUT" ]] || {
+                    err "[test] --output requires a file path"
+                    return 1
+                }
+                shift 2
+                ;;
+            --port)
+                port="${2:-}"
+                shift 2
+                ;;
+            --defender-port)
+                defender_port="${2:-}"
+                shift 2
+                ;;
+            --path)
+                path="${2:-}"
+                shift 2
+                ;;
+            --sni)
+                sni="${2:-}"
+                shift 2
+                ;;
+            --finalmask)
+                finalmask="${2:-}"
+                shift 2
+                ;;
+            --finalmask-preset)
+                finalmask_preset="${2:-balanced}"
+                shift 2
+                ;;
+            --fallback-limit)
+                fallback_limit="${2:-off}"
+                shift 2
+                ;;
+            *)
+                err "[test] unknown test-config-generate option: $1"
+                return 1
+                ;;
+        esac
+    done
+
+    setup_test_config_generation_env || return 1
+
+    case "$profile" in
+        reality)
+            REALITY_PORT_REQUEST="${port:-30004}"
+            REALITY_DEFENDER_PORT_REQUEST="${defender_port:-40004}"
+            REALITY_SNI_REQUEST="$sni"
+            REALITY_EMPTY_CLIENTS="false"
+            REALITY_ASSUME_YES="true"
+            REALITY_FLOW="$REALITY_FLOW_DEFAULT"
+            REALITY_DRY_RUN="true"
+            configure_reality "dry-run" && install_reality
+            ;;
+        xhttp-off | xhttp)
+            XHTTP_PORT_REQUEST="${port:-30005}"
+            XHTTP_PATH_REQUEST="${path:-/api/offline}"
+            XHTTP_FINALMASK_REQUEST="${finalmask:-off}"
+            FINALMASK_PRESET_REQUEST=""
+            FINALMASK_JSON_REQUEST=""
+            FINALMASK_PACKETS_REQUEST=""
+            FINALMASK_LENGTH_REQUEST=""
+            FINALMASK_DELAY_REQUEST=""
+            FINALMASK_MAX_SPLIT_REQUEST=""
+            XHTTP_DRY_RUN="true"
+            VLESS_MODE="basic"
+            VLESS_AUTH="x25519"
+            VLESS_ENC_METHOD="native"
+            VLESS_CLIENT_RTT="0rtt"
+            VLESS_SERVER_TICKET="600s"
+            configure_vless_xhttp_finalmask "dry-run" && install_vless_xhttp_finalmask
+            ;;
+        xhttp-balanced | xhttp-finalmask-balanced)
+            XHTTP_PORT_REQUEST="${port:-30005}"
+            XHTTP_PATH_REQUEST="${path:-/api/balanced}"
+            XHTTP_FINALMASK_REQUEST="${finalmask:-on}"
+            FINALMASK_PRESET_REQUEST="${finalmask_preset:-balanced}"
+            FINALMASK_JSON_REQUEST=""
+            FINALMASK_PACKETS_REQUEST=""
+            FINALMASK_LENGTH_REQUEST=""
+            FINALMASK_DELAY_REQUEST=""
+            FINALMASK_MAX_SPLIT_REQUEST=""
+            XHTTP_DRY_RUN="true"
+            VLESS_MODE="basic"
+            VLESS_AUTH="x25519"
+            VLESS_ENC_METHOD="native"
+            VLESS_CLIENT_RTT="0rtt"
+            VLESS_SERVER_TICKET="600s"
+            configure_vless_xhttp_finalmask "dry-run" && install_vless_xhttp_finalmask
+            ;;
+        xhttp-reality | enc-reality | fullstack)
+            case "$profile" in
+                xhttp-reality)
+                    kind="xhttp-reality"
+                    port="${port:-30006}"
+                    path="${path:-/api/xhttp-reality}"
+                    finalmask="off"
+                    ;;
+                enc-reality)
+                    kind="enc-reality"
+                    port="${port:-30007}"
+                    path=""
+                    finalmask="off"
+                    ;;
+                fullstack)
+                    kind="fullstack"
+                    port="${port:-30008}"
+                    path="${path:-/api/fullstack}"
+                    finalmask="${finalmask:-off}"
+                    ;;
+            esac
+            ADVANCED_PORT_REQUEST="$port"
+            ADVANCED_PATH_REQUEST="$path"
+            ADVANCED_SNI_REQUEST="$sni"
+            ADVANCED_FINALMASK_REQUEST="$finalmask"
+            ADVANCED_FINALMASK_SPECIFIED="true"
+            ADVANCED_FLOW="$REALITY_FLOW_NONE"
+            ADVANCED_FALLBACK_LIMIT_REQUEST="$fallback_limit"
+            FINALMASK_PRESET_REQUEST="${finalmask_preset:-balanced}"
+            FINALMASK_JSON_REQUEST=""
+            FINALMASK_PACKETS_REQUEST=""
+            FINALMASK_LENGTH_REQUEST=""
+            FINALMASK_DELAY_REQUEST=""
+            FINALMASK_MAX_SPLIT_REQUEST=""
+            ADVANCED_AUTH_SPECIFIED="false"
+            ADVANCED_ASSUME_YES="true"
+            ADVANCED_DRY_RUN="true"
+            VLESS_MODE="basic"
+            VLESS_AUTH="x25519"
+            VLESS_ENC_METHOD="native"
+            VLESS_CLIENT_RTT="0rtt"
+            VLESS_SERVER_TICKET="600s"
+            configure_advanced_profile "$kind" "dry-run" && install_advanced_profile "$kind"
+            ;;
+        *)
+            err "[test] unknown profile: $profile"
+            return 1
+            ;;
+    esac
+
+    [[ -s "$IKE_CONFIG_OUT" ]] || {
+        err "[test] offline config was not written: $IKE_CONFIG_OUT"
+        return 1
+    }
+}
+
 show_help() {
     cat <<'EOF'
 Xray-OneClick 命令帮助
@@ -9948,6 +10487,8 @@ Xray-OneClick 命令帮助
   ike xray version
   ike xray upgrade --dry-run
   ike xray upgrade --version vX.Y.Z --restart
+  ike xray upgrade --xray-channel prerelease --restart
+  env: XRAY_VERSION=vX.Y.Z / XRAY_CHANNEL=stable|prerelease
   ike doctor all
   ike doctor preflight
   ike doctor proxy
@@ -10095,7 +10636,7 @@ main() {
             show_version
             return 0
             ;;
-        "" | preflight | view | doctor | smoke | export | xray | migrate | uninstall | update | backup | endpoint | config | service | logs | cnblock | safety | tunnel | forward | reality | xhttp | xhttp-reality | enc-reality | fullstack | bootstrap) ;;
+        "" | preflight | view | doctor | smoke | export | xray | migrate | uninstall | update | backup | endpoint | config | service | logs | cnblock | safety | tunnel | forward | reality | xhttp | xhttp-reality | enc-reality | fullstack | bootstrap | test-config-generate) ;;
         *)
             err "[失败] 未知命令: $1"
             echo "运行 ike help 查看可用命令。"
@@ -10106,6 +10647,12 @@ main() {
     if [[ "${1:-}" == "preflight" ]]; then
         shift
         run_preflight_command "$@"
+        return $?
+    fi
+
+    if [[ "${1:-}" == "test-config-generate" ]]; then
+        shift
+        run_test_config_generate_command "$@"
         return $?
     fi
 
