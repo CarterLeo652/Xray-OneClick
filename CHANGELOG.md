@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+- 修复交互式卸载 SS2022 / VLESS Encryption / SOCKS5 时未备份、先删 state 导致 config/state 不一致的问题
+- 修复 Tunnel 部署包 `install-tunnels.sh` 误进入交互菜单，改为非交互 bootstrap
+- `ike config edit` 编辑前自动备份 config.json
+- 新增 GitHub Actions CI，运行离线配置生成测试
+
 ## 1.1.7
 - 新增 Xray stable/prerelease 通道
 - REALITY 生成字段迁移为 `target`，旧配置仍兼容读取

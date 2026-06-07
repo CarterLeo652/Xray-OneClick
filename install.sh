@@ -7250,7 +7250,7 @@ Xray-OneClick Tunnel 部署包
 在另一台 Linux 机器上导入:
 
 curl -fsSL ${RAW_SCRIPT_URL} -o install.sh
-bash install.sh
+XRAY_ONECLICK_YES=1 bash install.sh bootstrap
 ike tunnel import /root/tunnels.json
 
 也可以使用非交互导入:
@@ -7272,8 +7272,8 @@ SCRIPT_PATH="/root/install.sh"
 BUNDLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH"
-bash "$SCRIPT_PATH"
-ike tunnel bundle import "$BUNDLE_DIR" --yes
+XRAY_ONECLICK_YES=1 bash "$SCRIPT_PATH" bootstrap
+bash "$SCRIPT_PATH" tunnel bundle import "$BUNDLE_DIR" --yes
 EOF
     chmod +x "$bundle_dir/install-tunnels.sh"
 
@@ -7821,6 +7821,40 @@ remove_inbound() {
     rm -f "$tmp"
 }
 
+remove_simple_inbound_config() {
+    local tag="$1"
+    local state_key="$2"
+    local label="$3"
+
+    [[ -f "$CONFIG_FILE" ]] || {
+        info "[${label}] 未找到配置文件，视为未安装。"
+        state_delete_key "$state_key" 2>/dev/null || true
+        return 0
+    }
+
+    if ! jq -e --arg tag "$tag" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1; then
+        state_delete_key "$state_key" 2>/dev/null || true
+        ok "[完成] ${label} 未安装或已删除。"
+        return 0
+    fi
+
+    backup_config || {
+        err "[失败] [${label}] 配置备份失败。"
+        return 1
+    }
+
+    remove_inbound "$tag" || return 1
+
+    if ! apply_config "${label} 删除"; then
+        err "[失败] [${label}] 应用删除失败，已尝试自动回滚。"
+        return 1
+    fi
+
+    state_delete_key "$state_key"
+    state_set_meta_action "删除 ${label}" || err "[状态] 最近变更记录失败。"
+    ok "[完成] ${label} 已删除。"
+}
+
 state_delete_key() {
     local key="$1"
     local tmp
@@ -7898,16 +7932,10 @@ uninstall() {
 
     case "$OPT" in
         1)
-            remove_inbound "$SS_TAG"
-            state_delete_key "ss2022"
-            apply_config
-            ok "[完成] SS2022 已删除。"
+            remove_simple_inbound_config "$SS_TAG" "ss2022" "SS2022"
             ;;
         2)
-            remove_inbound "$VLESS_TAG"
-            state_delete_key "vless_encryption"
-            apply_config
-            ok "[完成] VLESS Encryption 已删除。"
+            remove_simple_inbound_config "$VLESS_TAG" "vless_encryption" "VLESS Encryption"
             ;;
         3)
             remove_reality_config
@@ -7925,10 +7953,7 @@ uninstall() {
             remove_advanced_profile_config "fullstack"
             ;;
         8)
-            remove_inbound "$SOCKS_TAG"
-            state_delete_key "socks5"
-            apply_config
-            ok "[完成] SOCKS5 已删除。"
+            remove_simple_inbound_config "$SOCKS_TAG" "socks5" "SOCKS5"
             ;;
         9)
             read -r -p "确认卸载 Xray、配置和快捷命令? [y/N]: " CONFIRM
@@ -8323,6 +8348,10 @@ run_config_command() {
             fi
             [[ -n "$editor_cmd" ]] || {
                 err "[失败] 未找到可用编辑器，请设置 EDITOR 或安装 nano/vi。"
+                return 1
+            }
+            backup_config || {
+                err "[失败] 配置备份失败，已中止编辑。"
                 return 1
             }
             "$editor_cmd" "$CONFIG_FILE" || return 1
