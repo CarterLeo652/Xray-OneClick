@@ -22,6 +22,7 @@ _ike_source_lib() {
 _ike_source_lib "01-constants" || exit 1
 _ike_source_lib "02-output" || exit 1
 _ike_source_lib "20-paths" || exit 1
+_ike_source_lib "40-network" || exit 1
 _ike_source_lib "41-safety" || exit 1
 _ike_source_lib "21-config-base" || exit 1
 _ike_source_lib "31-service" || exit 1
@@ -33,6 +34,10 @@ _ike_source_lib "51-reality" || exit 1
 _ike_source_lib "52-xhttp" || exit 1
 _ike_source_lib "53-advanced" || exit 1
 _ike_source_lib "55-socks" || exit 1
+_ike_source_lib "56-tunnel" || exit 1
+_ike_source_lib "70-view" || exit 1
+_ike_source_lib "71-cli-view" || exit 1
+_ike_source_lib "80-menu" || exit 1
 _ike_source_lib "63-diag" || exit 1
 _ike_source_lib "60-doctor" || exit 1
 _ike_source_lib "61-smoke" || exit 1
