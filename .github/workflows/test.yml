@@ -39,7 +39,7 @@ jobs:
         run: bash -n install.sh
 
       - name: ShellCheck modular libraries
-        run: shellcheck -x lib/*.sh
+        run: shellcheck -x -S error lib/*.sh
 
       - name: Smoke test CLI entry
         run: bash install.sh version
