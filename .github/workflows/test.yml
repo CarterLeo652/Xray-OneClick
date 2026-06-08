@@ -14,8 +14,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify lib modules
+        run: |
+          for f in \
+            00-bootstrap.sh 01-constants.sh 02-output.sh 20-paths.sh \
+            41-safety.sh 21-config-base.sh 31-service.sh 30-xray-core.sh \
+            50-vless-common.sh 54-ss2022.sh 50-vless-enc.sh \
+            51-reality.sh 52-xhttp.sh 53-advanced.sh 55-socks.sh \
+            63-diag.sh 60-doctor.sh 61-smoke.sh 62-export.sh
+          do
+            test -f "lib/$f"
+          done
+          lines=$(wc -l < install.sh)
+          echo "install.sh lines: $lines"
+          test "$lines" -lt 7000
+
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y jq
+        run: sudo apt-get update && sudo apt-get install -y jq shellcheck
+
+      - name: Bash syntax check
+        run: bash -n install.sh
+
+      - name: ShellCheck modular libraries
+        run: shellcheck -x lib/*.sh
+
+      - name: Smoke test CLI entry
+        run: bash install.sh version
 
       - name: Run offline config generation tests
         run: bash tests/test_config_generation.sh
