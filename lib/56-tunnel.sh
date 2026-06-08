@@ -88,15 +88,6 @@ endpoint_clear_command() {
     ok "[完成] 自定义 endpoint 已清除。"
 }
 
-env_truthy() {
-    local value="${1:-}"
-
-    case "${value,,}" in
-        1 | true | yes | y | on) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
 tunnel_import_auto_yes_enabled() {
     env_truthy "${XRAY_ONECLICK_YES:-}" || env_truthy "${XRAY_ONECLICK_TUNNEL_IMPORT_YES:-}"
 }
