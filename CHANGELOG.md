@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased
+- 修复 P3 提取残留：`70-view` / `71-cli-view` / `80-menu` / `56-tunnel` / `72-cli-core` 截断与孤立 `done`/`fi` 导致 shellcheck 与运行时失败
+
 ## 1.1.10
 - 修复 P0 模块化遗漏：恢复 `init_state` / `state_set_meta_action` 等 5 个 state 函数至 `lib/22-state.sh`
 - 修复 `ike_ensure_lib_modules` 早退导致旧 `lib/` 无法增量更新

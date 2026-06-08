@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 # Interactive main menu.
 
-        read -r -p "按回车继续..." || return 0
-    done
-}
-
 render_menu() {
     clear 2>/dev/null || true
     echo -e "${GREEN}==============================================${PLAIN}"
@@ -128,4 +124,8 @@ show_menu() {
             19) exit 0 ;;
             *) err "错误选项。" ;;
         esac
+
+        pause_return_menu
+    done
+}
 

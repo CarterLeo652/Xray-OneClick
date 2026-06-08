@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 # ike view command handler.
 
-        pause_return_menu
-    done
-}
-
 run_view_command() {
     local mode="$LINK_VIEW_MODE"
     local detail="quick"
@@ -59,3 +55,6 @@ run_view_command() {
         show_footer
         return 0
     fi
+
+    view_config "$mode" "$detail"
+}

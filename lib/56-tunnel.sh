@@ -2276,9 +2276,8 @@ configure_forward_menu() {
         esac
 
         echo
-
-        return 1
-    fi
+        read -r -p "按回车返回 Tunnel 菜单..." || return 0
+    done
 }
 
 run_bootstrap_command() {

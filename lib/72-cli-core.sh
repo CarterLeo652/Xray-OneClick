@@ -358,3 +358,7 @@ migrate_old_state() {
           (if ((.[$fullstack_key].finalmask_summary // "") == "" and $fullstack_fm_summary != "") then .[$fullstack_key].finalmask_summary = $fullstack_fm_summary else . end)
         else . end)
       ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
+    rm -f "$tmp"
+    ensure_config_security
+    ok "[迁移] state 兼容字段已补齐。"
+}

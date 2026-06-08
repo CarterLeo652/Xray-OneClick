@@ -6,7 +6,7 @@ Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在
 
 脚本支持 Shadowsocks 2022、VLESS Encryption、VLESS TCP REALITY、VLESS Encryption + XHTTP + FinalMask、SOCKS5、Tunnel 中转管理，以及高级协议组合。默认带基础安全屏蔽、配置备份、服务诊断、配置导出、Xray-core 升级和安全卸载能力，并提供 stable / prerelease 两条 Xray-core 通道。
 
-当前版本：`1.1.9`
+当前版本：`1.1.10`
 
 状态：正式版
 
@@ -735,7 +735,7 @@ ike service repair
 | `03-system` | 依赖安装、BBR、预检、`ask_port`、UUID/端口工具 |
 | `20-paths` / `21-config-base` / `22-state` | root/OS/架构检测、配置读写、`installer-state.json` |
 | `30-xray-core` / `31-service` | Xray 下载升级、systemd/openrc |
-| `40-network` / `41-safety` | Endpoint、链接生成、安全屏蔽 |
+| `40-network` / `41-safety` | Endpoint CLI/探测、链接生成、安全屏蔽 |
 | `50-*`–`55-*` | 协议安装（VLESS、Reality、XHTTP、SS2022、SOCKS5） |
 | `56-tunnel` | Tunnel/Forward 管理与 bootstrap |
 | `60-doctor`–`63-diag` / `62-export` | 诊断、smoke、导出 |

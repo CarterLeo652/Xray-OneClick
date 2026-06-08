@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 # View config links, reset secrets, uninstall helpers.
 
-        read -r -p "按回车返回 Tunnel 菜单..." || return 0
-    done
-}
-
 view_config() {
     local mode="${1:-$LINK_VIEW_MODE}"
     local detail="${2:-quick}"
@@ -480,4 +476,6 @@ configure_advanced_profiles_menu() {
             6 | "") return 0 ;;
             *) err "无效选项。" ;;
         esac
-        echo
+        pause_return_menu
+    done
+}
