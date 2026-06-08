@@ -42,3 +42,9 @@ _ike_source_lib "63-diag" || exit 1
 _ike_source_lib "60-doctor" || exit 1
 _ike_source_lib "61-smoke" || exit 1
 _ike_source_lib "62-export" || exit 1
+_ike_source_lib "73-cli-migrate" || exit 1
+_ike_source_lib "72-cli-core" || exit 1
+_ike_source_lib "72-cli-admin" || exit 1
+_ike_source_lib "74-cli-protocols" || exit 1
+_ike_source_lib "90-test-harness" || exit 1
+_ike_source_lib "81-help" || exit 1

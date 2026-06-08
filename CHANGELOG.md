@@ -1,7 +1,8 @@
 # Changelog
 
 ## Unreleased
-- P0–P3 模块化：`install.sh` 拆分为 24 个 `lib/` 模块（基础设施、协议、Tunnel、view/menu、诊断导出），主脚本约 1.8k 行；安装时同步复制 `lib/`；curl 单文件安装时自动从 GitHub 拉取全部 lib 模块
+- P0–P4 模块化：`install.sh` 拆分为 30 个 `lib/` 模块，主入口约 670 行；修复 P3 误删的 `run_xray_command` / `migrate_old_state` 与 `run_logs_command` 损坏；README 补充 `lib/` 架构说明
+- P0–P3 模块化：基础设施、协议、Tunnel、view/menu、诊断导出；安装时同步复制 `lib/`；curl 单文件安装时自动从 GitHub 拉取全部 lib 模块
 - CI 增加全量 lib 完整性检查、shellcheck、`install.sh version` 冒烟测试
 - 修复交互式卸载 SS2022 / VLESS Encryption / SOCKS5 时未备份、先删 state 导致 config/state 不一致的问题
 - 修复 Tunnel 部署包 `install-tunnels.sh` 误进入交互菜单，改为非交互 bootstrap

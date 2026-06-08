@@ -712,11 +712,33 @@ ike service repair
 | Xray 二进制 | `/usr/local/bin/xray` |
 | Xray 资源目录 | `/usr/local/share/xray` |
 | 安装器副本 | `/usr/local/share/ike/install.sh` |
+| 安装器模块目录 | `/usr/local/share/ike/lib/` |
 | systemd 服务 | `/etc/systemd/system/xray.service` |
 | 主快捷命令 | `/usr/local/bin/ike` |
 | 兼容快捷命令 | `/usr/local/bin/sb` |
 
 `installer-state.json` 保存客户端链接所需字段和最近变更信息，应像配置文件一样保护。
+
+## 代码结构（开发者）
+
+自 v1.1.8 起，安装器由 **薄入口 `install.sh`** + **`lib/` 模块** 组成。`ike` 命令会加载 `/usr/local/share/ike/lib/`（或仓库内同目录下的 `lib/`），按 `lib/00-bootstrap.sh` 中的顺序 `source` 各模块。
+
+| 模块前缀 | 职责 |
+| --- | --- |
+| `01` / `02` / `20` | 常量、输出、路径与 OS 检测 |
+| `21` / `30` / `31` / `40` / `41` | 配置生命周期、Xray 核心、systemd、网络 Endpoint、安全屏蔽 |
+| `50`–`55` | 协议安装（VLESS、Reality、XHTTP、SS2022、SOCKS5 等） |
+| `56` / `70`–`80` | Tunnel 中转、链接展示、主菜单 |
+| `60`–`63` / `62` | `doctor` / `smoke` / 诊断辅助 / `export` |
+| `72`–`74` / `81` / `90` | 管理类 CLI、migrate/uninstall、协议 CLI、帮助、离线测试 harness |
+
+Git 仓库克隆后可直接 `bash install.sh`；仅 `curl` 下载单文件时，脚本会从 GitHub 自动拉取缺失的 `lib/*.sh`。
+
+离线配置生成测试（不写入 `/etc/xray`、不要求 root）：
+
+```bash
+bash tests/test_config_generation.sh
+```
 
 ## 备份与迁移
 
