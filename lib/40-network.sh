@@ -266,3 +266,110 @@ endpoint_auto_value() {
     return 1
 }
 
+endpoint_detect_command() {
+    local line ip source found="false"
+
+    echo -e "\n${YELLOW}[Endpoint] IPv4 探测结果${PLAIN}"
+    while IFS=$'\t' read -r ip source; do
+        [[ -n "$ip" ]] || continue
+        found="true"
+        echo "- ${ip} (${source})"
+    done < <(detect_public_ip "4")
+    [[ "$found" == "true" ]] || echo "- 未检测到 IPv4"
+
+    found="false"
+    echo -e "\n${YELLOW}[Endpoint] IPv6 探测结果${PLAIN}"
+    while IFS=$'\t' read -r ip source; do
+        [[ -n "$ip" ]] || continue
+        found="true"
+        echo "- ${ip} (${source})"
+    done < <(detect_public_ip "6")
+    [[ "$found" == "true" ]] || echo "- 未检测到 IPv6"
+}
+
+endpoint_show_command() {
+    local custom updated auto
+
+    init_state
+    custom="$(endpoint_custom_value)"
+    updated="$(endpoint_updated_at)"
+    if [[ -n "$custom" ]]; then
+        echo "当前自定义 endpoint: $custom"
+        [[ -n "$updated" ]] && echo "更新时间: $updated"
+        if endpoint_has_explicit_port "$custom"; then
+            echo "提示: 当前 endpoint 已包含端口，Tunnel 列表不会自动拼接本地监听端口。"
+        fi
+        return 0
+    fi
+
+    auto="$(endpoint_auto_value || true)"
+    if [[ -n "$auto" ]]; then
+        echo "当前未设置自定义 endpoint，自动检测: $auto"
+    else
+        echo "当前未设置自定义 endpoint，自动检测失败。"
+        echo "建议运行: ike endpoint set"
+    fi
+}
+
+endpoint_set_command() {
+    local endpoint
+
+    read -r -p "自定义连接地址，例如 1.2.3.4 / example.com / domain.com:外部端口: " endpoint
+    endpoint="${endpoint//$'\r'/}"
+    if [[ -z "$endpoint" || "$endpoint" =~ [[:space:]] ]]; then
+        err "[失败] [Endpoint] 地址不能为空，且不能包含空白字符。"
+        return 1
+    fi
+    state_set_endpoint "$endpoint" || return 1
+    state_set_meta_action "设置 Endpoint" || err "[状态] 最近变更记录失败。"
+    ok "[完成] 自定义 endpoint 已设置: $endpoint"
+}
+
+endpoint_clear_command() {
+    state_clear_endpoint || return 1
+    state_set_meta_action "清除 Endpoint" || err "[状态] 最近变更记录失败。"
+    ok "[完成] 自定义 endpoint 已清除。"
+}
+
+apply_env_endpoint_if_needed() {
+    local endpoint="${XRAY_ONECLICK_ENDPOINT:-}"
+
+    [[ -n "$endpoint" ]] || return 0
+    endpoint="${endpoint//$'\r'/}"
+    if [[ -z "$endpoint" || "$endpoint" =~ [[:space:]] ]]; then
+        err "[失败] [Endpoint] XRAY_ONECLICK_ENDPOINT 不能为空，且不能包含空白字符。"
+        return 1
+    fi
+    if [[ "$endpoint" == *\"* || "$endpoint" == *\\* ]]; then
+        err "[失败] [Endpoint] XRAY_ONECLICK_ENDPOINT 不能包含引号或反斜杠。"
+        return 1
+    fi
+
+    if ! command -v jq >/dev/null 2>&1; then
+        mkdir -p "$CONFIG_DIR"
+        if [[ -s "$STATE_FILE" ]]; then
+            info "[Endpoint] 缺少 jq，已保留现有 state，暂不覆盖 endpoint。"
+            return 0
+        fi
+        cat >"$STATE_FILE" <<EOF
+{
+  "endpoint": {
+    "custom": "$endpoint",
+    "updated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  }
+}
+EOF
+        ensure_config_security
+        ok "[Endpoint] 已从环境变量设置连接入口: $endpoint"
+        return 0
+    fi
+
+    init_state
+    if [[ -n "$(endpoint_custom_value)" ]]; then
+        return 0
+    fi
+
+    state_set_endpoint "$endpoint" || return 1
+    state_set_meta_action "设置 Endpoint" || err "[状态] 最近变更记录失败。"
+    ok "[Endpoint] 已从环境变量设置连接入口: $endpoint"
+}

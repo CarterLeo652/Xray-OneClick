@@ -24,10 +24,10 @@ _ike_source_lib "02-output" || exit 1
 _ike_source_lib "03-installer" || exit 1
 _ike_source_lib "03-system" || exit 1
 _ike_source_lib "20-paths" || exit 1
-_ike_source_lib "40-network" || exit 1
-_ike_source_lib "41-safety" || exit 1
 _ike_source_lib "21-config-base" || exit 1
 _ike_source_lib "22-state" || exit 1
+_ike_source_lib "40-network" || exit 1
+_ike_source_lib "41-safety" || exit 1
 _ike_source_lib "31-service" || exit 1
 _ike_source_lib "30-xray-core" || exit 1
 _ike_source_lib "50-vless-common" || exit 1

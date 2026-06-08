@@ -154,6 +154,24 @@ status_xray_service() {
     fi
 }
 
+xray_service_status() {
+    if [[ "$INIT_SYSTEM" == "systemd" ]] && command -v systemctl >/dev/null 2>&1; then
+        if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+            printf '%s' "运行中"
+        else
+            printf '%s' "未运行"
+        fi
+    elif [[ "$INIT_SYSTEM" == "openrc" ]] && command -v rc-service >/dev/null 2>&1; then
+        if rc-service "$SERVICE_NAME" status 2>/dev/null | grep -qiE 'started|running'; then
+            printf '%s' "运行中"
+        else
+            printf '%s' "未运行"
+        fi
+    else
+        printf '%s' "未检测到 systemd/openrc"
+    fi
+}
+
 stop_service() {
     if [[ "$INIT_SYSTEM" == "systemd" ]]; then
         systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true

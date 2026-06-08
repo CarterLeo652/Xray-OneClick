@@ -1,6 +1,6 @@
 # Xray-OneClick
 
-**Xray-OneClick 1.1.9**
+**Xray-OneClick 1.1.10**
 
 Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在 Debian / Ubuntu systemd 服务器上快速安装和维护个人 Xray 节点。
 
