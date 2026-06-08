@@ -1,12 +1,12 @@
 # Xray-OneClick
 
-**Xray-OneClick 1.1.8**
+**Xray-OneClick 1.1.9**
 
 Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在 Debian / Ubuntu systemd 服务器上快速安装和维护个人 Xray 节点。
 
 脚本支持 Shadowsocks 2022、VLESS Encryption、VLESS TCP REALITY、VLESS Encryption + XHTTP + FinalMask、SOCKS5、Tunnel 中转管理，以及高级协议组合。默认带基础安全屏蔽、配置备份、服务诊断、配置导出、Xray-core 升级和安全卸载能力，并提供 stable / prerelease 两条 Xray-core 通道。
 
-当前版本：`1.1.8`
+当前版本：`1.1.9`
 
 状态：正式版
 
@@ -725,18 +725,25 @@ ike service repair
 
 ## 代码结构（开发者）
 
-自 v1.1.8 起，安装器由 **薄入口 `install.sh`** + **`lib/` 模块** 组成。`ike` 命令会加载 `/usr/local/share/ike/lib/`（或仓库内同目录下的 `lib/`），按 `lib/00-bootstrap.sh` 中的顺序 `source` 各模块。
+自 v1.1.8 起，安装器由 **薄入口 `install.sh`（约 210 行）** + **32 个 `lib/` 模块** 组成。`ike` 命令会加载 `/usr/local/share/ike/lib/`（或仓库内同目录下的 `lib/`），按 `lib/00-bootstrap.sh` 中的依赖顺序 `source` 各模块。
 
-| 模块前缀 | 职责 |
+| 模块 | 职责 |
 | --- | --- |
-| `01` / `02` / `03` / `20` | 常量、输出、系统预检与依赖、路径与 OS 检测 |
-| `21` / `30` / `31` / `40` / `41` | 配置生命周期、Xray 核心、systemd、网络 Endpoint、安全屏蔽 |
-| `50`–`55` | 协议安装（VLESS、Reality、XHTTP、SS2022、SOCKS5 等） |
-| `56` / `70`–`80` | Tunnel 中转、链接展示、主菜单 |
-| `60`–`63` / `62` | `doctor` / `smoke` / 诊断辅助 / `export` |
-| `72`–`74` / `81` / `90` | 管理类 CLI、migrate/uninstall、协议 CLI、帮助、离线测试 harness |
+| `00-bootstrap` | 按序加载全部模块 |
+| `01-constants` / `02-output` | 全局常量、终端输出、`env_truthy` |
+| `03-installer` | `ike`/`sb` 快捷命令与 `lib/` 自部署 |
+| `03-system` | 依赖安装、BBR、预检、`ask_port`、UUID/端口工具 |
+| `20-paths` / `21-config-base` | root/OS/架构检测、配置读写与校验 |
+| `30-xray-core` / `31-service` | Xray 下载升级、systemd/openrc |
+| `40-network` / `41-safety` | Endpoint、链接生成、安全屏蔽 |
+| `50-*`–`55-*` | 协议安装（VLESS、Reality、XHTTP、SS2022、SOCKS5） |
+| `56-tunnel` | Tunnel/Forward 管理与 bootstrap |
+| `60-doctor`–`63-diag` / `62-export` | 诊断、smoke、导出 |
+| `70-view` / `71-cli-view` / `80-menu` | 链接展示与交互菜单 |
+| `72-cli-*` / `73-cli-migrate` / `74-cli-protocols` | 管理类 CLI、迁移卸载、协议 CLI |
+| `81-help` / `90-test-harness` | 帮助版本、离线测试 harness |
 
-Git 仓库克隆后可直接 `bash install.sh`；仅 `curl` 下载单文件时，脚本会从 GitHub 自动拉取缺失的 `lib/*.sh`。
+**入口流程**：`install.sh` 设置 `IKE_INSTALLER_DIR` → 确保 `lib/` 存在（缺失则从 raw 下载）→ `source 00-bootstrap.sh` → `main()` 路由到各 CLI 处理器。
 
 离线配置生成测试（不写入 `/etc/xray`、不要求 root）：
 

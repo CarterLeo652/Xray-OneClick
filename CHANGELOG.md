@@ -1,7 +1,7 @@
 # Changelog
 
-## Unreleased
-- P6 模块化：`install_shortcut` 拆至 `lib/03-installer.sh`，`install.sh` 主入口进一步瘦身
+## 1.1.9
+- P6 模块化：`install_shortcut` 拆至 `lib/03-installer.sh`，`install.sh` 主入口约 216 行；README 补充模块表与安装说明
 
 ## 1.1.8
 - P5 模块化：系统准备与预检拆至 `lib/03-system.sh`，`env_truthy` 上移至 `02-output.sh`；主入口约 200 行
