@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+- 修复 P0 模块化遗漏：恢复 `init_state` / `state_set_meta_action` 等 5 个 state 函数至 `lib/22-state.sh`
+- 修复 `ike_ensure_lib_modules` 早退导致旧 `lib/` 无法增量更新
+- 删除 `21-config-base.sh` 中与 `30-xray-core.sh` 重复的 `apply_config` 及 `install.sh` 不可达 preflight 分支
+
 ## 1.1.9
 - P6 模块化：`install_shortcut` 拆至 `lib/03-installer.sh`，`install.sh` 主入口约 216 行；README 补充模块表与安装说明
 

@@ -733,7 +733,7 @@ ike service repair
 | `01-constants` / `02-output` | 全局常量、终端输出、`env_truthy` |
 | `03-installer` | `ike`/`sb` 快捷命令与 `lib/` 自部署 |
 | `03-system` | 依赖安装、BBR、预检、`ask_port`、UUID/端口工具 |
-| `20-paths` / `21-config-base` | root/OS/架构检测、配置读写与校验 |
+| `20-paths` / `21-config-base` / `22-state` | root/OS/架构检测、配置读写、`installer-state.json` |
 | `30-xray-core` / `31-service` | Xray 下载升级、systemd/openrc |
 | `40-network` / `41-safety` | Endpoint、链接生成、安全屏蔽 |
 | `50-*`–`55-*` | 协议安装（VLESS、Reality、XHTTP、SS2022、SOCKS5） |

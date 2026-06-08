@@ -15,6 +15,7 @@ IKE_LIB_MODULES=(
     "40-network.sh"
     "41-safety.sh"
     "21-config-base.sh"
+    "22-state.sh"
     "31-service.sh"
     "30-xray-core.sh"
     "50-vless-common.sh"
@@ -44,8 +45,6 @@ ike_ensure_lib_modules() {
     local root_dir="$1"
     local lib_dir="${root_dir}/lib"
     local module missing=()
-
-    [[ -f "${lib_dir}/00-bootstrap.sh" && -f "${lib_dir}/21-config-base.sh" ]] && return 0
 
     mkdir -p "$lib_dir" || return 1
     for module in "${IKE_LIB_MODULES[@]}"; do
@@ -117,10 +116,6 @@ main() {
     case "${1:-}" in
         "")
             show_menu
-            ;;
-        preflight)
-            shift
-            run_preflight_command "$@"
             ;;
         view)
             shift
