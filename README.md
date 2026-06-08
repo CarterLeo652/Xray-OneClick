@@ -725,7 +725,7 @@ ike service repair
 
 ## 代码结构（开发者）
 
-自 v1.1.8 起，安装器由 **薄入口 `install.sh`（约 210 行）** + **32 个 `lib/` 模块** 组成。`ike` 命令会加载 `/usr/local/share/ike/lib/`（或仓库内同目录下的 `lib/`），按 `lib/00-bootstrap.sh` 中的依赖顺序 `source` 各模块。
+自 v1.1.8 起，安装器由 **薄入口 `install.sh`（约 210 行）** + **33 个 `lib/` 模块** 组成。`ike` 命令会加载 `/usr/local/share/ike/lib/`（或仓库内同目录下的 `lib/`），按 `lib/00-bootstrap.sh` 中的依赖顺序 `source` 各模块。
 
 | 模块 | 职责 |
 | --- | --- |
