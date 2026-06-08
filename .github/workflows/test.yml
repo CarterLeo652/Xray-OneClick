@@ -17,7 +17,7 @@ jobs:
       - name: Verify lib modules
         run: |
           for f in \
-            00-bootstrap.sh 01-constants.sh 02-output.sh 03-system.sh 20-paths.sh 40-network.sh \
+            00-bootstrap.sh 01-constants.sh 02-output.sh 03-installer.sh 03-system.sh 20-paths.sh 40-network.sh \
             41-safety.sh 21-config-base.sh 31-service.sh 30-xray-core.sh \
             50-vless-common.sh 54-ss2022.sh 50-vless-enc.sh \
             51-reality.sh 52-xhttp.sh 53-advanced.sh 55-socks.sh 56-tunnel.sh \

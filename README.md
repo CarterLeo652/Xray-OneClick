@@ -64,6 +64,10 @@ chmod +x /root/install.sh
 bash /root/install.sh
 ```
 
+仅下载 `install.sh` 单文件时，脚本会在首次运行期间从 GitHub 自动拉取缺失的 `lib/*.sh` 模块（需 `curl` 或 `wget`）。完整 Git 克隆则自带全部模块，适合离线或开发调试。
+
+安装时会将 `install.sh` 与 `lib/` 同步到 `/usr/local/share/ike/`，并创建 `ike` / `sb` 快捷命令。
+
 安装完成后可直接运行：
 
 ```bash

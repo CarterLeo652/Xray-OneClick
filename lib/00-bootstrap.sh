@@ -21,6 +21,7 @@ _ike_source_lib() {
 
 _ike_source_lib "01-constants" || exit 1
 _ike_source_lib "02-output" || exit 1
+_ike_source_lib "03-installer" || exit 1
 _ike_source_lib "03-system" || exit 1
 _ike_source_lib "20-paths" || exit 1
 _ike_source_lib "40-network" || exit 1

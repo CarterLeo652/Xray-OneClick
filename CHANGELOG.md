@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased
+- P6 模块化：`install_shortcut` 拆至 `lib/03-installer.sh`，`install.sh` 主入口进一步瘦身
+
 ## 1.1.8
 - P5 模块化：系统准备与预检拆至 `lib/03-system.sh`，`env_truthy` 上移至 `02-output.sh`；主入口约 200 行
 - P0–P4 模块化：`install.sh` 拆分为 31 个 `lib/` 模块；修复 P3 误删的 `run_xray_command` / `migrate_old_state` 与 `run_logs_command` 损坏；README 补充 `lib/` 架构说明
