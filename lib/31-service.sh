@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 # Xray-OneClick systemd/openrc service management.
 
+openrc_init_path() {
+    printf '/etc/init.d/%s' "$SERVICE_NAME"
+}
+
 service_file_path() {
+    if [[ "${INIT_SYSTEM:-}" == "openrc" ]]; then
+        printf '%s' "${XRAY_SERVICE_FILE:-$(openrc_init_path)}"
+        return 0
+    fi
     printf '%s' "${XRAY_SERVICE_FILE:-/etc/systemd/system/${SERVICE_NAME}.service}"
 }
 
@@ -96,16 +104,44 @@ ensure_xray_service() {
         write_xray_service "$(service_file_path)" "$assume_yes" || return 1
         enable_xray_service || return 1
     elif [[ "$INIT_SYSTEM" == "openrc" ]]; then
-        cat >"/etc/init.d/${SERVICE_NAME}" <<EOF
+        local init_file
+        init_file="$(openrc_init_path)"
+        mkdir -p "$(dirname "$init_file")" "$ASSET_DIR" "$(log_dir_path)"
+        if [[ -f "$init_file" ]] && ! grep -q "Managed by Xray-OneClick" "$init_file"; then
+            cp -a "$init_file" "${init_file}.bak.$(date +%Y%m%d%H%M%S)" || {
+                err "[服务] 备份旧 OpenRC 脚本失败: $init_file"
+                return 1
+            }
+            if [[ "$assume_yes" != "true" ]] && ! env_truthy "${XRAY_ONECLICK_YES:-}"; then
+                err "[服务] 非交互模式未确认覆盖 OpenRC 脚本；如需覆盖请添加 --yes 或设置 XRAY_ONECLICK_YES=1。"
+                return 1
+            fi
+        fi
+        cat >"$init_file" <<EOF
 #!/sbin/openrc-run
+# Managed by Xray-OneClick
+
 name="xray"
+description="Xray Service"
+
 command="$BIN_PATH"
 command_args="run -c $CONFIG_FILE"
 command_background=true
-pidfile="/run/xray.pid"
-depend() { need net; }
+command_user="root"
+pidfile="/run/\${RC_SVCNAME}.pid"
+output_log="$(log_dir_path)/access.log"
+error_log="$(log_dir_path)/error.log"
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    checkpath -d -m 0755 "$(log_dir_path)"
+}
 EOF
-        chmod +x "/etc/init.d/${SERVICE_NAME}"
+        chmod +x "$init_file"
         rc-update add "$SERVICE_NAME" default >/dev/null 2>&1 || true
     else
         err "[服务] 未检测到 systemd/openrc，已跳过服务文件写入。"
@@ -131,7 +167,11 @@ restart_xray_service() {
             return 1
         }
     elif [[ "$INIT_SYSTEM" == "openrc" ]]; then
-        rc-service "$SERVICE_NAME" restart
+        rc-service "$SERVICE_NAME" restart || {
+            err "[服务] xray restart 失败，最近日志如下:"
+            tail -n 80 "$(log_dir_path)/error.log" 2>/dev/null | redact_sensitive_stream || true
+            return 1
+        }
     else
         err "[服务] 无法自动重启，请手动运行: $BIN_PATH run -c $CONFIG_FILE"
         return 1

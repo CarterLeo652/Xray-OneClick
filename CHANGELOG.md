@@ -1,7 +1,11 @@
 # Changelog
 
 ## Unreleased
-- 修复 P3 提取残留：`70-view` / `71-cli-view` / `80-menu` / `56-tunnel` / `72-cli-core` 截断与孤立 `done`/`fi` 导致 shellcheck 与运行时失败
+
+## 1.1.11
+- **Alpine / OpenRC**：预检、doctor、服务写入与日志路径完整支持；Alpine 自动选用 musl 版 Xray 包
+- 新增 `scripts/bootstrap.sh` 一行安装（`curl ... | sudo bash`）
+- OpenRC init 脚本增强：日志目录、`start_pre`、覆盖前备份
 
 ## 1.1.10
 - 修复 P0 模块化遗漏：恢复 `init_state` / `state_set_meta_action` 等 5 个 state 函数至 `lib/22-state.sh`

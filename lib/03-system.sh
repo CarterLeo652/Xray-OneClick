@@ -16,7 +16,7 @@ install_dependencies() {
     case "$OS_TYPE" in
         alpine)
             apk update
-            apk add bash curl wget unzip tar openssl ca-certificates jq coreutils iproute2 procps net-tools
+            apk add --no-cache bash curl wget unzip tar openssl ca-certificates jq coreutils iproute2 procps net-tools openrc
             ;;
         ubuntu | debian)
             export DEBIAN_FRONTEND=noninteractive
@@ -86,8 +86,11 @@ preflight_os() {
         debian | ubuntu)
             diag_ok "OS: ${pretty:-$id $version}"
             ;;
+        alpine)
+            diag_ok "OS: ${pretty:-Alpine Linux $version}（OpenRC）"
+            ;;
         *)
-            diag_warn "OS: ${pretty:-${id:-unknown}}；脚本主推 Debian 12 / Ubuntu 22.04+，其它系统请谨慎验证。"
+            diag_warn "OS: ${pretty:-${id:-unknown}}；脚本主推 Debian 12 / Ubuntu 22.04+ 或 Alpine（OpenRC），其它系统请谨慎验证。"
             ;;
     esac
 }
@@ -121,6 +124,30 @@ preflight_systemd() {
     diag_ok "systemd 可用"
 }
 
+preflight_openrc() {
+    if ! command -v rc-service >/dev/null 2>&1; then
+        diag_fail "rc-service 不存在，当前脚本无法管理 OpenRC 服务。"
+        return 1
+    fi
+    if [[ ! -d /etc/init.d ]]; then
+        diag_fail "未找到 /etc/init.d，OpenRC 不可用。"
+        return 1
+    fi
+    command -v rc-update >/dev/null 2>&1 || diag_warn "rc-update 不存在，服务可能无法设置开机自启。"
+    diag_ok "OpenRC 可用"
+}
+
+preflight_init_system() {
+    case "${INIT_SYSTEM:-}" in
+        systemd) preflight_systemd ;;
+        openrc) preflight_openrc ;;
+        *)
+            diag_fail "未检测到 systemd 或 OpenRC（INIT_SYSTEM=${INIT_SYSTEM:-未知}）。"
+            return 1
+            ;;
+    esac
+}
+
 preflight_disk() {
     local free_kb human
 
@@ -148,9 +175,18 @@ preflight_network_tools() {
     for tool in jq unzip openssl; do
         command -v "$tool" >/dev/null 2>&1 || missing_critical+=("$tool")
     done
-    for tool in tar systemctl journalctl awk sed grep; do
+    for tool in tar awk sed grep; do
         command -v "$tool" >/dev/null 2>&1 || missing_optional+=("$tool")
     done
+    if [[ "${INIT_SYSTEM:-}" == "systemd" ]]; then
+        for tool in systemctl journalctl; do
+            command -v "$tool" >/dev/null 2>&1 || missing_optional+=("$tool")
+        done
+    elif [[ "${INIT_SYSTEM:-}" == "openrc" ]]; then
+        for tool in rc-service rc-update; do
+            command -v "$tool" >/dev/null 2>&1 || missing_critical+=("$tool")
+        done
+    fi
     if ! command -v ss >/dev/null 2>&1 && ! command -v netstat >/dev/null 2>&1; then
         missing_optional+=("ss或netstat")
     fi
@@ -186,7 +222,7 @@ preflight_system() {
     print_preflight_summary
     preflight_root || failed="true"
     preflight_os || failed="true"
-    preflight_systemd || failed="true"
+    preflight_init_system || failed="true"
     preflight_arch || failed="true"
     preflight_disk || failed="true"
     preflight_network_tools || failed="true"

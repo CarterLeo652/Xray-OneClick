@@ -24,15 +24,18 @@ check_os() {
 }
 
 detect_arch() {
+    local musl_suffix=""
+
     ARCH="${XRAY_ONECLICK_UNAME_M:-$(uname -m)}"
+    [[ "${OS_TYPE:-}" == "alpine" ]] && musl_suffix="-musl"
     case "$ARCH" in
-        x86_64 | amd64) XRAY_ASSET="Xray-linux-64.zip" ;;
-        i386 | i686) XRAY_ASSET="Xray-linux-32.zip" ;;
-        aarch64 | arm64) XRAY_ASSET="Xray-linux-arm64-v8a.zip" ;;
-        armv7l | armv7*) XRAY_ASSET="Xray-linux-arm32-v7a.zip" ;;
-        armv6l | armv6*) XRAY_ASSET="Xray-linux-arm32-v6.zip" ;;
-        armv5l | armv5*) XRAY_ASSET="Xray-linux-arm32-v5.zip" ;;
-        riscv64) XRAY_ASSET="Xray-linux-riscv64.zip" ;;
+        x86_64 | amd64) XRAY_ASSET="Xray-linux-64${musl_suffix}.zip" ;;
+        i386 | i686) XRAY_ASSET="Xray-linux-32${musl_suffix}.zip" ;;
+        aarch64 | arm64) XRAY_ASSET="Xray-linux-arm64-v8a${musl_suffix}.zip" ;;
+        armv7l | armv7*) XRAY_ASSET="Xray-linux-arm32-v7a${musl_suffix}.zip" ;;
+        armv6l | armv6*) XRAY_ASSET="Xray-linux-arm32-v6${musl_suffix}.zip" ;;
+        armv5l | armv5*) XRAY_ASSET="Xray-linux-arm32-v5${musl_suffix}.zip" ;;
+        riscv64) XRAY_ASSET="Xray-linux-riscv64${musl_suffix}.zip" ;;
         s390x) XRAY_ASSET="Xray-linux-s390x.zip" ;;
         ppc64le) XRAY_ASSET="Xray-linux-ppc64le.zip" ;;
         ppc64) XRAY_ASSET="Xray-linux-ppc64.zip" ;;

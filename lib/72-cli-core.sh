@@ -6,6 +6,8 @@
 
 
 run_preflight_command() {
+    check_os
+    detect_arch
     preflight_system
 }
 

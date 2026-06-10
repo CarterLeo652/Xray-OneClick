@@ -4,7 +4,11 @@
 doctor_reality_config() {
     [[ -f "$CONFIG_FILE" ]] && diag_ok "config.json 存在" || diag_fail "config.json 不存在"
     [[ -x "$BIN_PATH" ]] && diag_ok "xray 二进制存在" || diag_warn "xray 二进制不存在: $BIN_PATH"
-    command -v systemctl >/dev/null 2>&1 && diag_ok "systemctl 存在" || diag_warn "systemctl 不存在或当前系统未使用 systemd"
+    if [[ "${INIT_SYSTEM:-}" == "openrc" ]]; then
+        command -v rc-service >/dev/null 2>&1 && diag_ok "rc-service 存在" || diag_warn "rc-service 不存在"
+    else
+        command -v systemctl >/dev/null 2>&1 && diag_ok "systemctl 存在" || diag_warn "systemctl 不存在或当前系统未使用 systemd"
+    fi
     command -v ss >/dev/null 2>&1 && diag_ok "ss 存在" || diag_warn "ss 不存在，端口监听检查将降级"
     command -v jq >/dev/null 2>&1 && diag_ok "jq 存在" || diag_fail "jq 不存在"
     command -v openssl >/dev/null 2>&1 && diag_ok "openssl 存在" || diag_warn "openssl 不存在，SNI TLS 探测不可用"
@@ -340,10 +344,10 @@ doctor_proxy() {
     diag_info "Xray version: $(detect_xray_version 2>/dev/null || printf '%s' '未安装')"
     [[ -f "$CONFIG_FILE" ]] && diag_ok "config.json 存在" || diag_fail "config.json 不存在"
     command -v jq >/dev/null 2>&1 && diag_ok "jq 存在" || diag_fail "jq 不存在"
-    if [[ "$INIT_SYSTEM" == "systemd" ]] && command -v systemctl >/dev/null 2>&1; then
+    if [[ "$INIT_SYSTEM" == "systemd" || "$INIT_SYSTEM" == "openrc" ]]; then
         [[ "$(xray_service_status)" == "运行中" ]] && diag_ok "xray 服务运行中" || diag_warn "xray 服务当前未运行"
     else
-        diag_warn "未检测到 systemd，跳过 systemctl 服务检查"
+        diag_warn "未检测到 systemd/OpenRC，跳过服务状态检查"
     fi
     [[ -f "$CONFIG_FILE" && -x "$BIN_PATH" ]] && diag_info "Xray 配置校验: $(xray_config_test_status)"
     if [[ -f "$CONFIG_FILE" ]] && command -v jq >/dev/null 2>&1; then

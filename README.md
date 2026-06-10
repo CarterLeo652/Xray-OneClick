@@ -1,12 +1,12 @@
 # Xray-OneClick
 
-**Xray-OneClick 1.1.10**
+**Xray-OneClick 1.1.11**
 
-Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在 Debian / Ubuntu systemd 服务器上快速安装和维护个人 Xray 节点。
+Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在 Debian / Ubuntu（systemd）或 **Alpine Linux（OpenRC）** 上快速安装和维护个人 Xray 节点。
 
 脚本支持 Shadowsocks 2022、VLESS Encryption、VLESS TCP REALITY、VLESS Encryption + XHTTP + FinalMask、SOCKS5、Tunnel 中转管理，以及高级协议组合。默认带基础安全屏蔽、配置备份、服务诊断、配置导出、Xray-core 升级和安全卸载能力，并提供 stable / prerelease 两条 Xray-core 通道。
 
-当前版本：`1.1.10`
+当前版本：`1.1.11`
 
 状态：正式版
 
@@ -39,12 +39,13 @@ Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在
 
 推荐环境：
 
-- Debian 12+
-- Ubuntu 22.04+
+- Debian 12+ / Ubuntu 22.04+（systemd）
+- **Alpine Linux 3.18+（OpenRC）**
 - root 权限
-- systemd
 - amd64 / arm64
 - curl 或 wget
+
+Alpine 会自动下载 **musl** 版 Xray 压缩包（如 `Xray-linux-64-musl.zip`），并使用 `/etc/init.d/xray` 管理服务。
 
 脚本会自动补齐常用依赖，例如 `jq`、`unzip`、`tar`、`openssl`。端口监听检查优先使用 `ss`，没有 `ss` 时会降级处理。
 
@@ -58,11 +59,21 @@ ike preflight
 
 ## 快速安装
 
+**一行安装（推荐，含 Alpine）：**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ike-sh/Xray-OneClick/main/scripts/bootstrap.sh | sudo bash
+```
+
+或传统方式：
+
 ```bash
 curl -fsSL -o /root/install.sh https://raw.githubusercontent.com/ike-sh/Xray-OneClick/main/install.sh
 chmod +x /root/install.sh
 bash /root/install.sh
 ```
+
+管道直装 `install.sh` 亦可：`curl -fsSL .../install.sh | sudo bash`
 
 仅下载 `install.sh` 单文件时，脚本会在首次运行期间从 GitHub 自动拉取缺失的 `lib/*.sh` 模块（需 `curl` 或 `wget`）。完整 Git 克隆则自带全部模块，适合离线或开发调试。
 
@@ -688,7 +699,7 @@ ike xray upgrade --restart
 
 升级失败时脚本会尝试回滚旧二进制，不会自动修改现有协议配置。
 
-## systemd 服务管理
+## 服务管理（systemd / OpenRC）
 
 ```bash
 ike service install
@@ -700,9 +711,12 @@ ike service repair
 
 服务文件路径：
 
-```text
-/etc/systemd/system/xray.service
-```
+| 初始化系统 | 路径 |
+| --- | --- |
+| systemd | `/etc/systemd/system/xray.service` |
+| OpenRC（Alpine） | `/etc/init.d/xray` |
+
+OpenRC 日志默认写入 `/var/log/xray/access.log` 与 `error.log`（`ike logs` 可读）。
 
 `service repair` 会重新写入本项目的 service 文件，不会删除协议配置或 state。
 
@@ -718,6 +732,7 @@ ike service repair
 | 安装器副本 | `/usr/local/share/ike/install.sh` |
 | 安装器模块目录 | `/usr/local/share/ike/lib/` |
 | systemd 服务 | `/etc/systemd/system/xray.service` |
+| OpenRC 服务 | `/etc/init.d/xray` |
 | 主快捷命令 | `/usr/local/bin/ike` |
 | 兼容快捷命令 | `/usr/local/bin/sb` |
 
