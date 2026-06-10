@@ -4,6 +4,7 @@
 render_export_report() {
     local tags ports xray_version
 
+    [[ -n "${INIT_SYSTEM:-}" ]] || check_os
     echo "Xray-OneClick 脱敏诊断报告"
     echo "----------------------------------------"
     echo "SCRIPT_VERSION: ${SCRIPT_VERSION}"

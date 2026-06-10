@@ -59,6 +59,10 @@ run_migrate_command() {
 
     echo -e "\n${YELLOW}旧配置迁移检查${PLAIN}"
     echo "----------------------------------------"
+    legacy_tags="$(detect_legacy_tags || true)"
+    if [[ -n "$legacy_tags" ]]; then
+        diag_info "检测到旧版 forward/tunnel tag: $(printf '%s' "$legacy_tags" | tr '\n' ' ')"
+    fi
     [[ "$dry_run" == "true" ]] || backup_before_migration
     migrate_old_config
     migrate_old_state "$dry_run"
