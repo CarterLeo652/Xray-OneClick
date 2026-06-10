@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.1.13
+- 版本号单一来源：`VERSION` + `SCRIPT_VERSION` + README 去重；CI 校验三者一致
+- 修复 README 标题与「当前版本」不同步（1.1.12 vs 1.1.11）
+
 ## 1.1.12
 - OpenRC 审查修复：musl 仅用于有官方包的架构；去掉 `after firewall`；init 增加 `directory` 指向 geo 资源目录
 - `prepare_system` / `ike doctor` 补 `check_os`+`detect_arch`；卸载/导出/日志路径统一 OpenRC 分支

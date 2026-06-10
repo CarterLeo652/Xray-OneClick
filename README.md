@@ -1,12 +1,10 @@
 # Xray-OneClick
 
-**Xray-OneClick 1.1.12**
-
 Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在 Debian / Ubuntu（systemd）或 **Alpine Linux（OpenRC）** 上快速安装和维护个人 Xray 节点。
 
 脚本支持 Shadowsocks 2022、VLESS Encryption、VLESS TCP REALITY、VLESS Encryption + XHTTP + FinalMask、SOCKS5、Tunnel 中转管理，以及高级协议组合。默认带基础安全屏蔽、配置备份、服务诊断、配置导出、Xray-core 升级和安全卸载能力，并提供 stable / prerelease 两条 Xray-core 通道。
 
-当前版本：`1.1.11`
+当前版本：**1.1.13**（与 `VERSION` / `ike version` 一致）
 
 状态：正式版
 

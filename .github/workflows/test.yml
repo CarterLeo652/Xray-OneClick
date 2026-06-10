@@ -35,6 +35,15 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y jq shellcheck
 
+      - name: Version consistency
+        run: |
+          script_ver=$(grep -m1 '^SCRIPT_VERSION=' lib/01-constants.sh | sed -E 's/^SCRIPT_VERSION="([^"]+)".*/\1/')
+          file_ver=$(tr -d '\r\n' < VERSION)
+          readme_ver=$(grep -m1 '当前版本' README.md | sed -E 's/.*\*\*([0-9.]+)\*\*.*/\1/')
+          echo "SCRIPT_VERSION=$script_ver VERSION=$file_ver README=$readme_ver"
+          test "$script_ver" = "$file_ver"
+          test "$script_ver" = "$readme_ver"
+
       - name: Bash syntax check
         run: bash -n install.sh
 
