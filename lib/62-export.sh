@@ -13,7 +13,7 @@ render_export_report() {
     else
         echo "xray version: 未安装"
     fi
-    echo "systemctl status: $(xray_service_status)"
+    echo "service status: $(xray_service_status)"
     echo "config test: $(xray_config_test_status)"
     echo "installed protocols: $(installed_protocols_summary)"
     if [[ -f "$CONFIG_FILE" ]] && command -v jq >/dev/null 2>&1; then
@@ -60,7 +60,9 @@ render_export_report() {
     fi
     echo
     echo "最近日志摘要:"
-    if command -v journalctl >/dev/null 2>&1; then
+    if [[ "${INIT_SYSTEM:-}" == "openrc" ]]; then
+        tail_xray_service_logs 20 || echo "  OpenRC 日志文件尚未生成"
+    elif command -v journalctl >/dev/null 2>&1; then
         journalctl -u "$SERVICE_NAME" -n 20 --no-pager 2>/dev/null | redact_sensitive_stream || true
     else
         echo "  journalctl 不可用"

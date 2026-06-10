@@ -23,11 +23,21 @@ check_os() {
     fi
 }
 
+alpine_uses_musl_asset() {
+    case "${1:-}" in
+        x86_64 | amd64 | i386 | i686 | aarch64 | arm64 | armv7l | armv7* | armv6l | armv6* | armv5l | armv5* | riscv64) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 detect_arch() {
     local musl_suffix=""
 
     ARCH="${XRAY_ONECLICK_UNAME_M:-$(uname -m)}"
-    [[ "${OS_TYPE:-}" == "alpine" ]] && musl_suffix="-musl"
+    if [[ "${OS_TYPE:-}" == "alpine" ]]; then
+        alpine_uses_musl_asset "$ARCH" || die "Alpine 上该架构无官方 musl 包: $ARCH（仅常见 amd64/arm64/arm32 等）"
+        musl_suffix="-musl"
+    fi
     case "$ARCH" in
         x86_64 | amd64) XRAY_ASSET="Xray-linux-64${musl_suffix}.zip" ;;
         i386 | i686) XRAY_ASSET="Xray-linux-32${musl_suffix}.zip" ;;

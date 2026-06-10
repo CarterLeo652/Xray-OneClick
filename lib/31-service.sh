@@ -17,6 +17,24 @@ log_dir_path() {
     printf '%s' "${XRAY_LOG_DIR:-/var/log/xray}"
 }
 
+tail_xray_service_logs() {
+    local lines="${1:-80}"
+    local log_dir access_log error_log shown="false"
+
+    log_dir="$(log_dir_path)"
+    access_log="${log_dir}/access.log"
+    error_log="${log_dir}/error.log"
+    if [[ -f "$error_log" ]]; then
+        tail -n "$lines" "$error_log" 2>/dev/null | redact_sensitive_stream || true
+        shown="true"
+    fi
+    if [[ -f "$access_log" ]]; then
+        tail -n "$lines" "$access_log" 2>/dev/null | redact_sensitive_stream || true
+        shown="true"
+    fi
+    [[ "$shown" == "true" ]]
+}
+
 validate_service_file() {
     local service_file="${1:-$(service_file_path)}"
 
@@ -128,13 +146,13 @@ command="$BIN_PATH"
 command_args="run -c $CONFIG_FILE"
 command_background=true
 command_user="root"
+directory="$ASSET_DIR"
 pidfile="/run/\${RC_SVCNAME}.pid"
 output_log="$(log_dir_path)/access.log"
 error_log="$(log_dir_path)/error.log"
 
 depend() {
     need net
-    after firewall
 }
 
 start_pre() {
@@ -169,7 +187,7 @@ restart_xray_service() {
     elif [[ "$INIT_SYSTEM" == "openrc" ]]; then
         rc-service "$SERVICE_NAME" restart || {
             err "[服务] xray restart 失败，最近日志如下:"
-            tail -n 80 "$(log_dir_path)/error.log" 2>/dev/null | redact_sensitive_stream || true
+            tail_xray_service_logs 80 || true
             return 1
         }
     else

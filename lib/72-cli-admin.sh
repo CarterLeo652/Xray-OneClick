@@ -183,12 +183,11 @@ run_logs_command() {
         journalctl -u "$SERVICE_NAME" -n 80 --no-pager 2>&1 | redact_sensitive_stream
         return "${PIPESTATUS[0]}"
     elif [[ "$INIT_SYSTEM" == "openrc" ]]; then
-        if [[ -f "$(log_dir_path)/access.log" || -f "$(log_dir_path)/error.log" ]]; then
-            tail -n 200 "$(log_dir_path)/access.log" "$(log_dir_path)/error.log" 2>/dev/null || true
-        else
-            err "[日志] 未找到 $(log_dir_path)/access.log 或 $(log_dir_path)/error.log。"
-            return 1
+        if tail_xray_service_logs 200; then
+            return 0
         fi
+        err "[日志] 未找到 $(log_dir_path) 下日志；请先 ike service install && ike service restart"
+        return 1
     else
         err "[日志] 未检测到 systemd/openrc，无法自动读取 Xray 日志。"
         return 1

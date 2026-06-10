@@ -16,7 +16,8 @@ install_dependencies() {
     case "$OS_TYPE" in
         alpine)
             apk update
-            apk add --no-cache bash curl wget unzip tar openssl ca-certificates jq coreutils iproute2 procps net-tools openrc
+            apk add --no-cache bash curl wget unzip tar openssl ca-certificates jq coreutils iproute2 procps net-tools
+            command -v rc-service >/dev/null 2>&1 || apk add --no-cache openrc
             ;;
         ubuntu | debian)
             export DEBIAN_FRONTEND=noninteractive
@@ -56,7 +57,9 @@ EOF
 }
 
 prepare_system() {
-    info "[系统] 环境: $OS_TYPE ($INIT_SYSTEM) / 架构: $ARCH / 核心: Xray"
+    [[ -n "${OS_TYPE:-}" ]] || check_os
+    [[ -n "${XRAY_ASSET:-}" ]] || detect_arch
+    info "[系统] 环境: $OS_TYPE ($INIT_SYSTEM) / 架构: $ARCH / 资产: ${XRAY_ASSET:-未知}"
     install_dependencies || return 1
     install_shortcut
     enable_bbr

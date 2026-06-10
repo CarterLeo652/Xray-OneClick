@@ -73,7 +73,7 @@ doctor_reality_port() {
     elif [[ $? -eq 2 ]]; then
         diag_warn "未找到 ss，跳过 Reality 主端口监听检查"
     else
-        diag_warn "Reality 主端口未监听: ${port}；如服务未运行，请执行 systemctl restart xray"
+        diag_warn "Reality 主端口未监听: ${port}；如服务未运行，请执行 ike service restart"
     fi
     if [[ "$port" != "443" ]]; then
         diag_warn "Reality 主端口当前不是 443，最新 Xray 可能会提示非 443 warning。"
@@ -371,6 +371,9 @@ doctor_proxy() {
 run_doctor_command() {
     local target="${1:-all}"
 
+    check_os
+    detect_arch
+
     case "$target" in
         preflight) preflight_system ;;
         reality-key) doctor_xray_x25519 ;;
@@ -399,6 +402,13 @@ run_doctor_command() {
 }
 
 show_journal_recent() {
+    if [[ "${INIT_SYSTEM:-}" == "openrc" ]]; then
+        if tail_xray_service_logs 80; then
+            return 0
+        fi
+        diag_warn "未找到 $(log_dir_path) 日志，请先 ike service restart"
+        return 0
+    fi
     if command -v journalctl >/dev/null 2>&1; then
         journalctl -u "$SERVICE_NAME" -n 80 --no-pager 2>&1 | redact_sensitive_stream || true
     else

@@ -140,7 +140,10 @@ run_uninstall_command() {
         diag_info "最终备份包: $(create_purge_backup)"
     fi
     stop_service
-    if command -v systemctl >/dev/null 2>&1; then
+    if [[ "${INIT_SYSTEM:-}" == "openrc" ]] && command -v rc-update >/dev/null 2>&1; then
+        rc-update del "$SERVICE_NAME" default >/dev/null 2>&1 || true
+        rm -f "/etc/init.d/${SERVICE_NAME}"
+    elif command -v systemctl >/dev/null 2>&1; then
         systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
     fi
     for path in "${remove_paths[@]}"; do

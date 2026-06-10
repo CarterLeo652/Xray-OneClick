@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.1.12
+- OpenRC 审查修复：musl 仅用于有官方包的架构；去掉 `after firewall`；init 增加 `directory` 指向 geo 资源目录
+- `prepare_system` / `ike doctor` 补 `check_os`+`detect_arch`；卸载/导出/日志路径统一 OpenRC 分支
+- Alpine 仅在缺少 `rc-service` 时安装 openrc 包
+
 ## 1.1.11
 - **Alpine / OpenRC**：预检、doctor、服务写入与日志路径完整支持；Alpine 自动选用 musl 版 Xray 包
 - 新增 `scripts/bootstrap.sh` 一行安装（`curl ... | sudo bash`）

@@ -90,7 +90,7 @@ print_apply_failure_hint() {
 
     err "[建议] 可先执行: ike doctor ${scope}"
     err "[建议] 可再执行: ike smoke ${scope}"
-    err "[建议] 查看最近日志: journalctl -u xray -n 80 --no-pager"
+    err "[建议] 查看最近日志: ike service logs"
 }
 
 print_finalmask_failure_hint() {
