@@ -22,7 +22,11 @@ trap 'rm -f -- "$tmp"' EXIT
 echo "[INFO] 下载 ${REPO} ${REF}（install.sh，GitHub API 优先）..."
 fetch_install_sh "$tmp"
 chmod +x "$tmp"
-remote_ver="$(grep -m1 '^SCRIPT_VERSION=' "$tmp" | sed -E 's/^SCRIPT_VERSION="([^"]+)".*/\1/')"
+# 版本号唯一来源是 lib/01-constants.sh；此处仅作信息展示，提取失败绝不能中断安装
+remote_ver="$(grep -m1 '^SCRIPT_VERSION=' "$tmp" 2>/dev/null | sed -E 's/^SCRIPT_VERSION="([^"]+)".*/\1/')" || remote_ver=""
+if [[ -z "$remote_ver" ]]; then
+    remote_ver="$(curl -fsSL "https://raw.githubusercontent.com/${REPO}/${REF}/lib/01-constants.sh?ts=${TS}" 2>/dev/null | grep -m1 '^SCRIPT_VERSION=' | sed -E 's/^SCRIPT_VERSION="([^"]+)".*/\1/')" || remote_ver=""
+fi
 [[ -n "$remote_ver" ]] && echo "[INFO] 远端版本：${remote_ver}"
 
 if [[ "$(id -u)" -eq 0 ]]; then

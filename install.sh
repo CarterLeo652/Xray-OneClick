@@ -108,6 +108,12 @@ main() {
         return $?
     fi
 
+    # 通过管道启动（curl ... | sudo bash）时本进程 stdin 已被占用/为 EOF，
+    # 交互式 read 会立即失败导致菜单空转退出；若存在终端则把 stdin 接回 /dev/tty
+    if [[ ! -t 0 && -r /dev/tty ]]; then
+        exec </dev/tty
+    fi
+
     ensure_root
     check_os
     detect_arch

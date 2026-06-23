@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.1.14
+- 修复 `scripts/bootstrap.sh`：提取版本号时 grep 在 `install.sh` 中找不到 `SCRIPT_VERSION`（已移至 `lib/01-constants.sh`），叠加 `set -euo pipefail` 导致命令替换失败、一键安装在打印「下载…」后静默退出；改为容错（失败不中断）并回退到 `lib/01-constants.sh` 获取版本
+- 修复 `curl ... | sudo bash` 管道方式下 stdin 被占用、交互菜单及所有 `read` 立即 EOF 空转退出：`install.sh` 进入交互逻辑前若检测到非 tty 且 `/dev/tty` 可读则 `exec </dev/tty`
+
 ## 1.1.13
 - 版本号单一来源：`VERSION` + `SCRIPT_VERSION` + README 去重；CI 校验三者一致
 - 修复 README 标题与「当前版本」不同步（1.1.12 vs 1.1.11）
