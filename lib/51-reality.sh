@@ -202,13 +202,14 @@ ask_or_random_reality_port() {
     fi
 
     while true; do
-        read -r -p "${prompt} (回车随机 ${min}-${max}): " input
+        read -r -p "${prompt} (回车随机 ${min}-${max}；推荐输入 443 以降低 IP 被封风险): " input
         if [[ -z "$input" ]]; then
             port="$(random_free_port "$min" "$max")" || {
                 err "[Reality] 无法在 ${min}-${max} 中找到可用端口。"
                 return 1
             }
             info "[Reality] 随机选择端口: ${port}"
+            info "[Reality] 提示: 非 443 端口 + 借用 SNI 较易被探测封锁，如条件允许建议改用 443。"
             printf -v "$__resultvar" '%s' "$port"
             return 0
         fi
@@ -221,6 +222,7 @@ ask_or_random_reality_port() {
             continue
         fi
         warn_reserved_port "$input"
+        [[ "$input" != "443" ]] && info "[Reality] 提示: Xray 官方建议优先使用 443，非 443 端口更易被探测封锁。"
         printf -v "$__resultvar" '%s' "$input"
         return 0
     done

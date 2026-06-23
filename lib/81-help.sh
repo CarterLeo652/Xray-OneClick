@@ -84,6 +84,11 @@ Xray-OneClick 命令帮助
   ike enc-xhttp install --port 30005 --path /api/demo --auth x25519
   ike enc-xhttp show
   ike enc-xhttp remove
+  ike hysteria2 install
+  ike hysteria2 install --dry-run
+  ike hysteria2 install --port 443 --sni www.microsoft.com
+  ike hysteria2 show
+  ike hysteria2 remove
   ike view reality
   ike view xhttp
   ike xhttp-reality install

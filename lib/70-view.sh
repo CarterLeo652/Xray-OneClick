@@ -113,6 +113,7 @@ view_config() {
     print_advanced_profile_result "xhttp-reality"
     print_advanced_profile_result "enc-reality"
     print_advanced_profile_result "fullstack"
+    print_hysteria2_result
 
     local socks_in sp su sw
     socks_in="$(jq -c --arg tag "$SOCKS_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" 2>/dev/null)"
@@ -327,6 +328,7 @@ installed_protocols_summary() {
         jq -e --arg tag "$VLESS_ENC_REALITY_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("Enc-Reality")
         jq -e --arg tag "$VLESS_FULLSTACK_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("FullStack")
         jq -e --arg tag "$SOCKS_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("SOCKS5")
+        jq -e --arg tag "$HY2_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("Hysteria2")
     fi
 
     if [[ ${#protocols[@]} -eq 0 ]]; then
@@ -353,9 +355,10 @@ render_uninstall_menu() {
     echo " 8) 删除 VLESS Encryption + REALITY 配置"
     echo " 9) 删除 VLESS Encryption + XHTTP + REALITY + FinalMask 配置"
     echo "10) 删除 SOCKS5 配置"
-    echo "11) 卸载全部 Xray"
-    echo "12) 清理旧 sing-box 残留"
-    echo "13) 返回主菜单"
+    echo "11) 删除 Hysteria2 配置"
+    echo "12) 卸载全部 Xray"
+    echo "13) 清理旧 sing-box 残留"
+    echo "14) 返回主菜单"
 }
 
 uninstall() {
@@ -394,6 +397,9 @@ uninstall() {
             remove_simple_inbound_config "$SOCKS_TAG" "socks5" "SOCKS5"
             ;;
         11)
+            remove_hysteria2_config
+            ;;
+        12)
             read -r -p "确认卸载 Xray、配置和快捷命令? [y/N]: " CONFIRM
             [[ "$CONFIRM" =~ ^[yY]$ ]] || return 0
             stop_service
@@ -409,10 +415,10 @@ uninstall() {
             ok "[完成] Xray 已彻底卸载。当前 shell 如仍缓存 ike 路径，可执行 hash -r。"
             exit 0
             ;;
-        12)
+        13)
             cleanup_legacy_singbox
             ;;
-        13 | "")
+        14 | "")
             return 0
             ;;
         *)

@@ -26,6 +26,7 @@ IKE_LIB_MODULES=(
     "53-advanced.sh"
     "55-socks.sh"
     "56-tunnel.sh"
+    "57-hysteria2.sh"
     "70-view.sh"
     "71-cli-view.sh"
     "80-menu.sh"
@@ -88,7 +89,7 @@ main() {
             show_version
             return 0
             ;;
-        "" | preflight | view | doctor | smoke | export | xray | migrate | uninstall | update | backup | endpoint | config | service | logs | cnblock | safety | tunnel | forward | reality | xhttp | enc-finalmask | enc-xhttp | xhttp-reality | enc-reality | fullstack | bootstrap | test-config-generate) ;;
+        "" | preflight | view | doctor | smoke | export | xray | migrate | uninstall | update | backup | endpoint | config | service | logs | cnblock | safety | tunnel | forward | reality | xhttp | enc-finalmask | enc-xhttp | hysteria2 | xhttp-reality | enc-reality | fullstack | bootstrap | test-config-generate) ;;
         *)
             err "[失败] 未知命令: $1"
             echo "运行 ike help 查看可用命令。"
@@ -199,6 +200,10 @@ main() {
         enc-xhttp)
             shift
             run_enc_xhttp_command "$@"
+            ;;
+        hysteria2)
+            shift
+            run_hysteria2_command "$@"
             ;;
         xhttp-reality)
             run_advanced_profile_command "xhttp-reality" "${2:-show}" "${@:3}"

@@ -18,6 +18,7 @@ ENC_REALITY_TAG="vless+enc+reality"
 FULLSTACK_TAG="vless+enc+xhttp+reality+finalmask"
 ENC_FM_TAG="vless-enc-tcp-finalmask-in"
 ENC_XHTTP_TAG="vless-enc-xhttp-in"
+HY2_TAG="hysteria2-in"
 
 cleanup() {
     rm -rf "$TMP_DIR"
@@ -157,8 +158,9 @@ assert_finalmask_sudoku() {
       (.inbounds[]? | select(.tag == $tag).streamSettings.finalmask) as $fm |
       ($fm | type == "object") and
       ($fm.tcp | type == "array") and
-      ($fm.tcp[0].type == "sudoku")
-    ' "$config" >/dev/null || fail "FinalMask sudoku 配置不合法: tag=$tag config=$config"
+      ($fm.tcp[0].type == "sudoku") and
+      (($fm.tcp[0].settings.password // "") | length > 0)
+    ' "$config" >/dev/null || fail "FinalMask sudoku 配置不合法(应含 settings.password): tag=$tag config=$config"
 }
 
 assert_tcp_security_none() {
@@ -181,6 +183,24 @@ assert_xhttp_plain() {
       ($ss.xhttpSettings | type == "object") and ($ss.xhttpSettings | has("path")) and
       (($ss | has("finalmask")) | not)
     ' "$config" >/dev/null || fail "ENC-XHTTP 入站结构不正确(应为 xhttp/none/含xhttpSettings.path/无finalmask): tag=$tag config=$config"
+}
+
+assert_hysteria2() {
+    local config="$1"
+    local tag="$2"
+
+    jq -e --arg tag "$tag" '
+      (.inbounds[]? | select(.tag == $tag)) as $in |
+      ($in.protocol == "hysteria") and
+      ($in.settings.version == 2) and
+      (($in.settings.clients[0].auth // "") | length > 0) and
+      ($in.streamSettings.network == "hysteria") and
+      ($in.streamSettings.security == "tls") and
+      ($in.streamSettings.hysteriaSettings.version == 2) and
+      (($in.streamSettings.tlsSettings.certificates[0].certificateFile // "") | length > 0) and
+      ($in.streamSettings.finalmask.udp[0].type == "salamander") and
+      (($in.streamSettings.finalmask.udp[0].settings.password // "") | length > 0)
+    ' "$config" >/dev/null || fail "Hysteria2 入站结构不正确: tag=$tag config=$config"
 }
 
 assert_fallback_limit() {
@@ -230,5 +250,8 @@ assert_tcp_security_none "$LAST_CONFIG" "$ENC_FM_TAG"
 
 run_case "enc_xhttp" enc-xhttp --port 30011 --path /api/enc-xhttp
 assert_xhttp_plain "$LAST_CONFIG" "$ENC_XHTTP_TAG"
+
+run_case "hysteria2" hysteria2 --port 30012 --sni www.microsoft.com
+assert_hysteria2 "$LAST_CONFIG" "$HY2_TAG"
 
 echo "[OK] 离线配置生成测试全部通过"

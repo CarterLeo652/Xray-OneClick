@@ -215,6 +215,12 @@ run_test_config_generate_command() {
             VLESS_SERVER_TICKET="600s"
             configure_vless_enc_xhttp "dry-run" && install_vless_enc_xhttp
             ;;
+        hysteria2 | hy2)
+            HY2_PORT_REQUEST="${port:-30012}"
+            HY2_SNI_REQUEST="$sni"
+            HY2_DRY_RUN="true"
+            configure_hysteria2 "dry-run" && install_hysteria2
+            ;;
         *)
             err "[test] unknown profile: $profile"
             return 1

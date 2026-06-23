@@ -2,9 +2,9 @@
 
 Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在 Debian / Ubuntu（systemd）或 **Alpine Linux（OpenRC）** 上快速安装和维护个人 Xray 节点。
 
-脚本支持 Shadowsocks 2022、VLESS Encryption、VLESS TCP REALITY、VLESS Encryption + XHTTP + FinalMask、VLESS Encryption + XHTTP、VLESS Encryption + FinalMask（sudoku）、SOCKS5、Tunnel 中转管理，以及高级协议组合。默认带基础安全屏蔽、配置备份、服务诊断、配置导出、Xray-core 升级和安全卸载能力，并提供 stable / prerelease 两条 Xray-core 通道。
+脚本支持 Shadowsocks 2022、VLESS Encryption、VLESS TCP REALITY、VLESS Encryption + XHTTP + FinalMask、VLESS Encryption + XHTTP、VLESS Encryption + FinalMask（sudoku）、SOCKS5、Hysteria2，以及高级协议组合与 Tunnel 中转管理。默认带基础安全屏蔽、配置备份、服务诊断、配置导出、Xray-core 升级和安全卸载能力，并提供 stable / prerelease 两条 Xray-core 通道。
 
-当前版本：**1.1.16**（与 `VERSION` / `ike version` 一致）
+当前版本：**1.1.17**（与 `VERSION` / `ike version` 一致）
 
 状态：正式版
 
@@ -140,22 +140,23 @@ XRAY_VERSION=v26.3.27 XRAY_CHANNEL=prerelease ike xray upgrade
 3. 安装 IPv6 + Shadowsocks 2022
 4. 安装 VLESS Encryption
 5. 安装 VLESS TCP REALITY
-6. 安装 VLESS Encryption + XHTTP + FinalMask
-7. 安装 VLESS Encryption + XHTTP
+6. 安装 VLESS Encryption + XHTTP
+7. 安装 VLESS Encryption + XHTTP + FinalMask
 8. 安装 VLESS Encryption + FinalMask（sudoku，TCP）
 9. 安装 VLESS XHTTP + REALITY（高级）
 10. 安装 VLESS Encryption + REALITY（高级）
 11. 安装 VLESS Encryption + XHTTP + REALITY + FinalMask（FullStack）
 12. 安装 SOCKS5 代理
-13. 查看当前配置链接
-14. 设置链接显示模式 (IPv4/IPv6/双栈)
-15. 重置密钥/密码（端口不变）
-16. 卸载/清理
-17. 开启/关闭中国大陆直连屏蔽
-18. 开启/关闭增强安全屏蔽
-19. 导出当前配置备份
-20. Tunnel 中转管理
-21. 退出
+13. 安装 Hysteria2
+14. 查看当前配置链接
+15. 设置链接显示模式 (IPv4/IPv6/双栈)
+16. 重置密钥/密码（端口不变）
+17. 卸载/清理
+18. 开启/关闭中国大陆直连屏蔽
+19. 开启/关闭增强安全屏蔽
+20. 导出当前配置备份
+21. Tunnel 中转管理
+22. 退出
 ```
 
 ## 常用命令
@@ -740,7 +741,7 @@ OpenRC 日志默认写入 `/var/log/xray/access.log` 与 `error.log`（`ike logs
 
 ## 代码结构（开发者）
 
-自 v1.1.8 起，安装器由 **薄入口 `install.sh`（约 210 行）** + **33 个 `lib/` 模块** 组成。`ike` 命令会加载 `/usr/local/share/ike/lib/`（或仓库内同目录下的 `lib/`），按 `lib/00-bootstrap.sh` 中的依赖顺序 `source` 各模块。
+自 v1.1.8 起，安装器由 **薄入口 `install.sh`（约 210 行）** + **34 个 `lib/` 模块** 组成。`ike` 命令会加载 `/usr/local/share/ike/lib/`（或仓库内同目录下的 `lib/`），按 `lib/00-bootstrap.sh` 中的依赖顺序 `source` 各模块。
 
 | 模块 | 职责 |
 | --- | --- |

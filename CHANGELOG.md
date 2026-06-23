@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.1.17
+- 新增协议「Hysteria2」(QUIC/TLS,自签证书 + Salamander obfs):菜单第 13 项与 CLI `ike hysteria2 install|show|remove`(`--port/--sni/--dry-run`);自动生成自签证书、认证密码与 obfs 密码,分享链接含 `insecure=1`。需 Xray-core v26+。
+- FinalMask sudoku 现生成随机 `password`(双端共享密钥,经 `fm` 链接下发),修正原裸 `{type:sudoku}` 无密钥、外观可预测的问题。
+- REALITY 端口提示优先推荐 443(Xray 官方警告:非 443 端口 + 借用 SNI 更易被探测封锁),选择非 443 时给出提示。
+- 主菜单顺序微调:6/7 改为「VLESS Encryption + XHTTP」在前、「+ FinalMask」在后。
+
 ## 1.1.16
 - 新增协议「VLESS Encryption + XHTTP」(纯净,不含 FinalMask/REALITY):菜单第 7 项与 CLI `ike enc-xhttp install|show|remove`(支持 `--port/--path/--auth/--dry-run`);生成 `protocol:vless / network:xhttp / security:none` 的加密入站,接入 view 链接、导出摘要、卸载菜单与离线配置生成测试。
 

@@ -38,6 +38,7 @@ _ike_source_lib "52-xhttp" || exit 1
 _ike_source_lib "53-advanced" || exit 1
 _ike_source_lib "55-socks" || exit 1
 _ike_source_lib "56-tunnel" || exit 1
+_ike_source_lib "57-hysteria2" || exit 1
 _ike_source_lib "70-view" || exit 1
 _ike_source_lib "71-cli-view" || exit 1
 _ike_source_lib "80-menu" || exit 1

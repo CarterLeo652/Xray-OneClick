@@ -56,6 +56,14 @@ render_export_report() {
         echo "  未安装"
     fi
     echo
+    echo "Hysteria2 摘要:"
+    if inbound_exists "$HY2_TAG"; then
+        jq -r --arg tag "$HY2_TAG" '.inbounds[]? | select(.tag == $tag) | "  port=\(.port) protocol=\(.protocol) obfs=\(.streamSettings.finalmask.udp[0].type // "")"' "$CONFIG_FILE"
+        jq -r ".${HY2_STATE_KEY} // {} | \"  sni=\(.sni // \"\") link=\(.link // \"\")\"" "$STATE_FILE" 2>/dev/null
+    else
+        echo "  未安装"
+    fi
+    echo
     echo "高级协议组合摘要:"
     if inbound_exists "$VLESS_XHTTP_REALITY_TAG"; then
         jq -r --arg tag "$VLESS_XHTTP_REALITY_TAG" '.inbounds[]? | select(.tag == $tag) | "  XHTTP-Reality port=\(.port) path=\(.streamSettings.xhttpSettings.path // "") sni=\(.streamSettings.realitySettings.serverNames[0] // "") flow=\(.settings.clients[0].flow // "none")"' "$CONFIG_FILE"

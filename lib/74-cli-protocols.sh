@@ -393,6 +393,81 @@ run_enc_xhttp_command() {
     esac
 }
 
+show_hysteria2_usage() {
+    cat <<'EOF'
+用法: ike hysteria2 <install|show|remove> [选项]
+
+  install              安装 Hysteria2 (QUIC/TLS 自签证书 + Salamander obfs)
+    --port N           指定 UDP 端口 (默认 443)
+    --sni DOMAIN       自签证书伪装 SNI (默认随机)
+    --dry-run          仅生成配置预览，不写入真实配置
+  show                 查看当前配置与分享链接
+  remove               删除该协议入站及自签证书
+
+说明: 需要 Xray-core v26+ 支持 Hysteria2;使用自签证书，客户端需允许不安全连接(insecure)。
+EOF
+}
+
+run_hysteria2_command() {
+    local action="${1:-show}"
+
+    case "$action" in
+        help | -h | --help)
+            show_hysteria2_usage
+            ;;
+        install)
+            shift
+            HY2_PORT_REQUEST=""
+            HY2_SNI_REQUEST=""
+            HY2_DRY_RUN="false"
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --port)
+                        HY2_PORT_REQUEST="${2:-}"
+                        shift 2
+                        ;;
+                    --sni)
+                        HY2_SNI_REQUEST="${2:-}"
+                        shift 2
+                        ;;
+                    --dry-run)
+                        HY2_DRY_RUN="true"
+                        shift
+                        ;;
+                    help | -h | --help)
+                        show_hysteria2_usage
+                        return 0
+                        ;;
+                    *)
+                        err "[失败] 未知 hysteria2 install 参数: $1"
+                        show_hysteria2_usage
+                        return 1
+                        ;;
+                esac
+            done
+            if [[ "$HY2_DRY_RUN" == "true" ]]; then
+                configure_hysteria2 "dry-run" && install_hysteria2
+            else
+                prepare_system || return 1
+                configure_hysteria2 "cli" && install_hysteria2
+            fi
+            ;;
+        show | "")
+            init_state
+            print_hysteria2_result "show"
+            ;;
+        remove | delete | del)
+            prepare_system || return 1
+            remove_hysteria2_config
+            ;;
+        *)
+            err "[失败] 未知 hysteria2 参数: $action"
+            show_hysteria2_usage
+            return 1
+            ;;
+    esac
+}
+
 show_advanced_profile_usage() {
     local kind="$1"
 

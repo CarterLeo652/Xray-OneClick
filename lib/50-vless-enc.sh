@@ -164,7 +164,10 @@ install_vless_encryption() {
 # ---------------------------------------------------------------------------
 
 build_finalmask_sudoku_json() {
-    jq -cn '{ tcp: [ { type: "sudoku" } ] }'
+    local password
+    password="$(openssl rand -hex 16 2>/dev/null)"
+    [[ -n "$password" ]] || password="$(generate_uuid | tr -d '-')"
+    jq -cn --arg pw "$password" '{ tcp: [ { type: "sudoku", settings: { password: $pw, ascii: "prefer_ascii", paddingMin: 0, paddingMax: 3 } } ] }'
 }
 
 configure_vless_enc_finalmask() {
