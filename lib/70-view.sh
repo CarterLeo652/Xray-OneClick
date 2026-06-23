@@ -108,6 +108,8 @@ view_config() {
 
     print_reality_result
     print_vless_xhttp_finalmask_result
+    print_vless_enc_finalmask_result
+    print_vless_enc_xhttp_result
     print_advanced_profile_result "xhttp-reality"
     print_advanced_profile_result "enc-reality"
     print_advanced_profile_result "fullstack"
@@ -319,6 +321,8 @@ installed_protocols_summary() {
         jq -e --arg tag "$VLESS_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("VLESS Encryption")
         jq -e --arg tag "$REALITY_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("Reality")
         jq -e --arg tag "$VLESS_XHTTP_FM_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("XHTTP-FinalMask")
+        jq -e --arg tag "$VLESS_ENC_FM_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("ENC-FinalMask")
+        jq -e --arg tag "$VLESS_ENC_XHTTP_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("ENC-XHTTP")
         jq -e --arg tag "$VLESS_XHTTP_REALITY_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("XHTTP-Reality")
         jq -e --arg tag "$VLESS_ENC_REALITY_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("Enc-Reality")
         jq -e --arg tag "$VLESS_FULLSTACK_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1 && protocols+=("FullStack")
@@ -343,13 +347,15 @@ render_uninstall_menu() {
     echo " 2) 删除 VLESS Encryption 配置"
     echo " 3) 删除 VLESS TCP REALITY 配置"
     echo " 4) 删除 VLESS Encryption + XHTTP + FinalMask 配置"
-    echo " 5) 删除 VLESS XHTTP + REALITY 配置"
-    echo " 6) 删除 VLESS Encryption + REALITY 配置"
-    echo " 7) 删除 VLESS Encryption + XHTTP + REALITY + FinalMask 配置"
-    echo " 8) 删除 SOCKS5 配置"
-    echo " 9) 卸载全部 Xray"
-    echo "10) 清理旧 sing-box 残留"
-    echo "11) 返回主菜单"
+    echo " 5) 删除 VLESS Encryption + XHTTP 配置"
+    echo " 6) 删除 VLESS Encryption + FinalMask (sudoku) 配置"
+    echo " 7) 删除 VLESS XHTTP + REALITY 配置"
+    echo " 8) 删除 VLESS Encryption + REALITY 配置"
+    echo " 9) 删除 VLESS Encryption + XHTTP + REALITY + FinalMask 配置"
+    echo "10) 删除 SOCKS5 配置"
+    echo "11) 卸载全部 Xray"
+    echo "12) 清理旧 sing-box 残留"
+    echo "13) 返回主菜单"
 }
 
 uninstall() {
@@ -370,18 +376,24 @@ uninstall() {
             remove_vless_xhttp_finalmask_config
             ;;
         5)
-            remove_advanced_profile_config "xhttp-reality"
+            remove_simple_inbound_config "$VLESS_ENC_XHTTP_TAG" "$VLESS_ENC_XHTTP_STATE_KEY" "VLESS Encryption + XHTTP"
             ;;
         6)
-            remove_advanced_profile_config "enc-reality"
+            remove_simple_inbound_config "$VLESS_ENC_FM_TAG" "$VLESS_ENC_FM_STATE_KEY" "VLESS Encryption + FinalMask"
             ;;
         7)
-            remove_advanced_profile_config "fullstack"
+            remove_advanced_profile_config "xhttp-reality"
             ;;
         8)
-            remove_simple_inbound_config "$SOCKS_TAG" "socks5" "SOCKS5"
+            remove_advanced_profile_config "enc-reality"
             ;;
         9)
+            remove_advanced_profile_config "fullstack"
+            ;;
+        10)
+            remove_simple_inbound_config "$SOCKS_TAG" "socks5" "SOCKS5"
+            ;;
+        11)
             read -r -p "确认卸载 Xray、配置和快捷命令? [y/N]: " CONFIRM
             [[ "$CONFIRM" =~ ^[yY]$ ]] || return 0
             stop_service
@@ -397,10 +409,10 @@ uninstall() {
             ok "[完成] Xray 已彻底卸载。当前 shell 如仍缓存 ike 路径，可执行 hash -r。"
             exit 0
             ;;
-        10)
+        12)
             cleanup_legacy_singbox
             ;;
-        11 | "")
+        13 | "")
             return 0
             ;;
         *)

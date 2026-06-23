@@ -40,6 +40,22 @@ render_export_report() {
         echo "  未安装"
     fi
     echo
+    echo "ENC-FinalMask (sudoku) 摘要:"
+    if inbound_exists "$VLESS_ENC_FM_TAG"; then
+        jq -r --arg tag "$VLESS_ENC_FM_TAG" '.inbounds[]? | select(.tag == $tag) | "  port=\(.port) network=\(.streamSettings.network) finalmask=\(.streamSettings.finalmask.tcp[0].type // "")"' "$CONFIG_FILE"
+        jq -r ".${VLESS_ENC_FM_STATE_KEY} // {} | \"  auth=\(.auth // \"\") link=\(.link // \"\")\"" "$STATE_FILE" 2>/dev/null
+    else
+        echo "  未安装"
+    fi
+    echo
+    echo "ENC-XHTTP 摘要:"
+    if inbound_exists "$VLESS_ENC_XHTTP_TAG"; then
+        jq -r --arg tag "$VLESS_ENC_XHTTP_TAG" '.inbounds[]? | select(.tag == $tag) | "  port=\(.port) network=\(.streamSettings.network) path=\(.streamSettings.xhttpSettings.path // "")"' "$CONFIG_FILE"
+        jq -r ".${VLESS_ENC_XHTTP_STATE_KEY} // {} | \"  auth=\(.auth // \"\") link=\(.link // \"\")\"" "$STATE_FILE" 2>/dev/null
+    else
+        echo "  未安装"
+    fi
+    echo
     echo "高级协议组合摘要:"
     if inbound_exists "$VLESS_XHTTP_REALITY_TAG"; then
         jq -r --arg tag "$VLESS_XHTTP_REALITY_TAG" '.inbounds[]? | select(.tag == $tag) | "  XHTTP-Reality port=\(.port) path=\(.streamSettings.xhttpSettings.path // "") sni=\(.streamSettings.realitySettings.serverNames[0] // "") flow=\(.settings.clients[0].flow // "none")"' "$CONFIG_FILE"

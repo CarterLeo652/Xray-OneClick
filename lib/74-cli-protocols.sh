@@ -225,6 +225,174 @@ run_xhttp_command() {
     esac
 }
 
+show_enc_finalmask_usage() {
+    cat <<'EOF'
+用法: ike enc-finalmask <install|show|remove> [选项]
+
+  install              安装 VLESS Encryption + FinalMask (sudoku, TCP)
+    --port N           指定端口 (默认 8444)
+    --auth TYPE        x25519 (默认) 或 mlkem768
+    --dry-run          仅生成配置预览，不写入真实配置
+  show                 查看当前配置与分享链接
+  remove               删除该协议入站
+
+说明: FinalMask(sudoku) 需要较新的 Xray-core 支持。
+EOF
+}
+
+run_enc_finalmask_command() {
+    local action="${1:-show}"
+
+    case "$action" in
+        help | -h | --help)
+            show_enc_finalmask_usage
+            ;;
+        install)
+            shift
+            VLESS_ENC_FM_PORT_REQUEST=""
+            VLESS_AUTH="x25519"
+            VLESS_ENC_FM_DRY_RUN="false"
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --port)
+                        VLESS_ENC_FM_PORT_REQUEST="${2:-}"
+                        shift 2
+                        ;;
+                    --auth)
+                        VLESS_AUTH="${2:-}"
+                        shift 2
+                        ;;
+                    --dry-run)
+                        VLESS_ENC_FM_DRY_RUN="true"
+                        shift
+                        ;;
+                    help | -h | --help)
+                        show_enc_finalmask_usage
+                        return 0
+                        ;;
+                    *)
+                        err "[失败] 未知 enc-finalmask install 参数: $1"
+                        show_enc_finalmask_usage
+                        return 1
+                        ;;
+                esac
+            done
+            case "$VLESS_AUTH" in
+                x25519 | mlkem768) ;;
+                *)
+                    err "[ENC-FinalMask] --auth 仅支持 x25519 或 mlkem768。"
+                    return 1
+                    ;;
+            esac
+            if [[ "$VLESS_ENC_FM_DRY_RUN" == "true" ]]; then
+                configure_vless_enc_finalmask "dry-run" && install_vless_enc_finalmask
+            else
+                prepare_system || return 1
+                configure_vless_enc_finalmask "cli" && install_vless_enc_finalmask
+            fi
+            ;;
+        show | "")
+            init_state
+            print_vless_enc_finalmask_result "show"
+            ;;
+        remove | delete | del)
+            prepare_system || return 1
+            remove_simple_inbound_config "$VLESS_ENC_FM_TAG" "$VLESS_ENC_FM_STATE_KEY" "VLESS Encryption + FinalMask"
+            ;;
+        *)
+            err "[失败] 未知 enc-finalmask 参数: $action"
+            show_enc_finalmask_usage
+            return 1
+            ;;
+    esac
+}
+
+show_enc_xhttp_usage() {
+    cat <<'EOF'
+用法: ike enc-xhttp <install|show|remove> [选项]
+
+  install              安装 VLESS Encryption + XHTTP (纯净, 无 FinalMask/REALITY)
+    --port N           指定入口端口 (默认随机 20000-50000)
+    --path P           指定 XHTTP path (默认随机)
+    --auth TYPE        x25519 (默认) 或 mlkem768
+    --dry-run          仅生成配置预览，不写入真实配置
+  show                 查看当前配置与分享链接
+  remove               删除该协议入站
+EOF
+}
+
+run_enc_xhttp_command() {
+    local action="${1:-show}"
+
+    case "$action" in
+        help | -h | --help)
+            show_enc_xhttp_usage
+            ;;
+        install)
+            shift
+            ENC_XHTTP_PORT_REQUEST=""
+            ENC_XHTTP_PATH_REQUEST=""
+            VLESS_AUTH="x25519"
+            ENC_XHTTP_DRY_RUN="false"
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --port)
+                        ENC_XHTTP_PORT_REQUEST="${2:-}"
+                        shift 2
+                        ;;
+                    --path)
+                        ENC_XHTTP_PATH_REQUEST="${2:-}"
+                        shift 2
+                        ;;
+                    --auth)
+                        VLESS_AUTH="${2:-}"
+                        shift 2
+                        ;;
+                    --dry-run)
+                        ENC_XHTTP_DRY_RUN="true"
+                        shift
+                        ;;
+                    help | -h | --help)
+                        show_enc_xhttp_usage
+                        return 0
+                        ;;
+                    *)
+                        err "[失败] 未知 enc-xhttp install 参数: $1"
+                        show_enc_xhttp_usage
+                        return 1
+                        ;;
+                esac
+            done
+            case "$VLESS_AUTH" in
+                x25519 | mlkem768) ;;
+                *)
+                    err "[ENC-XHTTP] --auth 仅支持 x25519 或 mlkem768。"
+                    return 1
+                    ;;
+            esac
+            if [[ "$ENC_XHTTP_DRY_RUN" == "true" ]]; then
+                configure_vless_enc_xhttp "dry-run" && install_vless_enc_xhttp
+            else
+                prepare_system || return 1
+                configure_vless_enc_xhttp "cli" && install_vless_enc_xhttp
+            fi
+            ;;
+        show | "")
+            init_state
+            print_vless_enc_xhttp_result "show"
+            ;;
+        remove | delete | del)
+            prepare_system || return 1
+            remove_simple_inbound_config "$VLESS_ENC_XHTTP_TAG" "$VLESS_ENC_XHTTP_STATE_KEY" "VLESS Encryption + XHTTP"
+            ;;
+        *)
+            err "[失败] 未知 enc-xhttp 参数: $action"
+            show_enc_xhttp_usage
+            return 1
+            ;;
+    esac
+}
+
 show_advanced_profile_usage() {
     local kind="$1"
 

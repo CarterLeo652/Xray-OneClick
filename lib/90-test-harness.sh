@@ -194,6 +194,27 @@ run_test_config_generate_command() {
             VLESS_SERVER_TICKET="600s"
             configure_advanced_profile "$kind" "dry-run" && install_advanced_profile "$kind"
             ;;
+        enc-finalmask | vless-enc-finalmask)
+            VLESS_ENC_FM_PORT_REQUEST="${port:-30010}"
+            VLESS_ENC_FM_DRY_RUN="true"
+            VLESS_MODE="basic"
+            VLESS_AUTH="x25519"
+            VLESS_ENC_METHOD="native"
+            VLESS_CLIENT_RTT="0rtt"
+            VLESS_SERVER_TICKET="600s"
+            configure_vless_enc_finalmask "dry-run" && install_vless_enc_finalmask
+            ;;
+        enc-xhttp | vless-enc-xhttp)
+            ENC_XHTTP_PORT_REQUEST="${port:-30011}"
+            ENC_XHTTP_PATH_REQUEST="${path:-/api/enc-xhttp}"
+            ENC_XHTTP_DRY_RUN="true"
+            VLESS_MODE="basic"
+            VLESS_AUTH="x25519"
+            VLESS_ENC_METHOD="native"
+            VLESS_CLIENT_RTT="0rtt"
+            VLESS_SERVER_TICKET="600s"
+            configure_vless_enc_xhttp "dry-run" && install_vless_enc_xhttp
+            ;;
         *)
             err "[test] unknown profile: $profile"
             return 1

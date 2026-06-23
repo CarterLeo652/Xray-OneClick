@@ -88,7 +88,7 @@ main() {
             show_version
             return 0
             ;;
-        "" | preflight | view | doctor | smoke | export | xray | migrate | uninstall | update | backup | endpoint | config | service | logs | cnblock | safety | tunnel | forward | reality | xhttp | xhttp-reality | enc-reality | fullstack | bootstrap | test-config-generate) ;;
+        "" | preflight | view | doctor | smoke | export | xray | migrate | uninstall | update | backup | endpoint | config | service | logs | cnblock | safety | tunnel | forward | reality | xhttp | enc-finalmask | enc-xhttp | xhttp-reality | enc-reality | fullstack | bootstrap | test-config-generate) ;;
         *)
             err "[失败] 未知命令: $1"
             echo "运行 ike help 查看可用命令。"
@@ -191,6 +191,14 @@ main() {
         xhttp)
             shift
             run_xhttp_command "$@"
+            ;;
+        enc-finalmask)
+            shift
+            run_enc_finalmask_command "$@"
+            ;;
+        enc-xhttp)
+            shift
+            run_enc_xhttp_command "$@"
             ;;
         xhttp-reality)
             run_advanced_profile_command "xhttp-reality" "${2:-show}" "${@:3}"

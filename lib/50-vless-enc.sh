@@ -158,3 +158,230 @@ install_vless_encryption() {
     ok "[完成] VLESS Encryption 已写入 Xray 配置。"
     view_config
 }
+
+# ---------------------------------------------------------------------------
+# VLESS Encryption + FinalMask (sudoku) over plain TCP
+# ---------------------------------------------------------------------------
+
+build_finalmask_sudoku_json() {
+    jq -cn '{ tcp: [ { type: "sudoku" } ] }'
+}
+
+configure_vless_enc_finalmask() {
+    local mode="${1:-interactive}"
+
+    VLESS_MODE="basic"
+    VLESS_ENC_METHOD="native"
+    VLESS_CLIENT_RTT="0rtt"
+    VLESS_SERVER_TICKET="600s"
+    VLESS_ENC_FM_LISTEN="0.0.0.0"
+
+    if [[ "$mode" == "interactive" ]]; then
+        ask_vless_auth
+        ask_port "VLESS Encryption + FinalMask 端口" "8444" VLESS_ENC_FM_PORT
+    else
+        VLESS_AUTH="${VLESS_AUTH:-x25519}"
+        if [[ -n "${VLESS_ENC_FM_PORT_REQUEST:-}" ]]; then
+            validate_port "$VLESS_ENC_FM_PORT_REQUEST" || {
+                err "[ENC-FinalMask] 端口无效: $VLESS_ENC_FM_PORT_REQUEST"
+                return 1
+            }
+            if port_used_in_config "$VLESS_ENC_FM_PORT_REQUEST" || ! check_port "$VLESS_ENC_FM_PORT_REQUEST"; then
+                err "[ENC-FinalMask] 端口已被占用或已存在于 config.json: $VLESS_ENC_FM_PORT_REQUEST"
+                return 1
+            fi
+            VLESS_ENC_FM_PORT="$VLESS_ENC_FM_PORT_REQUEST"
+        else
+            VLESS_ENC_FM_PORT="8444"
+        fi
+    fi
+
+    VLESS_UUID="$(generate_uuid)" || return 1
+    generate_vless_encryption_pair "$VLESS_AUTH" || return 1
+    VLESS_ENC_FM_JSON="$(build_finalmask_sudoku_json)" || return 1
+}
+
+build_vless_enc_finalmask_share_link() {
+    local port="${VLESS_ENC_FM_PORT:-}"
+    local uuid="${VLESS_UUID:-}"
+    local encryption="${VLESS_ENCRYPTION:-}"
+    local finalmask_json="${VLESS_ENC_FM_JSON:-}"
+    local host link_port endpoint_pair enc_uri fm_uri name_uri
+
+    if [[ -z "$port" && -f "$STATE_FILE" ]]; then
+        port="$(jq -r ".${VLESS_ENC_FM_STATE_KEY}.port // empty" "$STATE_FILE" 2>/dev/null)"
+        uuid="$(jq -r ".${VLESS_ENC_FM_STATE_KEY}.uuid // empty" "$STATE_FILE" 2>/dev/null)"
+        encryption="$(jq -r ".${VLESS_ENC_FM_STATE_KEY}.encryption // empty" "$STATE_FILE" 2>/dev/null)"
+        finalmask_json="$(jq -c ".${VLESS_ENC_FM_STATE_KEY}.finalmask_json // empty" "$STATE_FILE" 2>/dev/null)"
+    fi
+
+    [[ -n "$port" && -n "$uuid" && -n "$encryption" ]] || return 1
+    endpoint_pair="$(link_endpoint_for_tag "$port" "$VLESS_ENC_FM_TAG" "$VLESS_ENC_FM_STATE_KEY")"
+    IFS=$'\t' read -r host link_port <<<"$endpoint_pair"
+    enc_uri="$(url_encode "$encryption")"
+    name_uri="$(url_encode "Xray-ENC-FinalMask")"
+
+    printf 'vless://%s@%s:%s?type=tcp&security=none&encryption=%s' \
+        "$uuid" "$host" "$link_port" "$enc_uri"
+    if [[ -n "$finalmask_json" && "$finalmask_json" != "null" ]]; then
+        fm_uri="$(json_url_encode "$finalmask_json")" || return 1
+        printf '&fm=%s' "$fm_uri"
+    fi
+    printf '#%s' "$name_uri"
+}
+
+state_set_vless_enc_finalmask() {
+    init_state
+    local tmp link timestamp
+    link="$(build_vless_enc_finalmask_share_link || true)"
+    timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    tmp="$(mktemp)"
+    jq --arg key "$VLESS_ENC_FM_STATE_KEY" \
+        --arg tag "$VLESS_ENC_FM_TAG" \
+        --arg uuid "$VLESS_UUID" \
+        --arg encryption "$VLESS_ENCRYPTION" \
+        --arg auth "$VLESS_AUTH" \
+        --arg enc_method "$VLESS_ENC_METHOD" \
+        --arg client_rtt "$VLESS_CLIENT_RTT" \
+        --arg server_ticket "$VLESS_SERVER_TICKET" \
+        --arg port "$VLESS_ENC_FM_PORT" \
+        --argjson finalmask_json "${VLESS_ENC_FM_JSON:-null}" \
+        --arg link "$link" \
+        --arg updated "$timestamp" \
+        --arg listen_scope "$(protocol_listen_scope "${VLESS_ENC_FM_LISTEN:-}")" '
+        .[$key] = {
+          "tag": $tag,
+          "uuid": $uuid,
+          "encryption": $encryption,
+          "auth": $auth,
+          "mode": "basic",
+          "enc_method": $enc_method,
+          "client_rtt": $client_rtt,
+          "server_ticket": $server_ticket,
+          "port": ($port|tonumber),
+          "finalmask_type": "sudoku",
+          "finalmask_json": $finalmask_json,
+          "link": $link,
+          "listen_scope": $listen_scope,
+          "updated_at": $updated
+        }
+       ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
+    rm -f "$tmp"
+    ensure_config_security
+}
+
+install_vless_enc_finalmask() {
+    local tmp config_source base_tmp
+
+    config_source="$CONFIG_FILE"
+    if [[ "${VLESS_ENC_FM_DRY_RUN:-false}" == "true" && ! -f "$config_source" ]]; then
+        base_tmp="$(mktemp)" || return 1
+        printf '{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[{"tag":"direct","protocol":"freedom"}],"routing":{"rules":[]}}\n' >"$base_tmp"
+        config_source="$base_tmp"
+    fi
+    if [[ "${VLESS_ENC_FM_DRY_RUN:-false}" != "true" ]]; then
+        backup_config || {
+            err "[ENC-FinalMask] 配置备份失败。"
+            return 1
+        }
+    fi
+
+    tmp="$(mktemp)" || return 1
+    if ! jq --arg tag "$VLESS_ENC_FM_TAG" \
+        --arg listen "${VLESS_ENC_FM_LISTEN:-0.0.0.0}" \
+        --arg port "$VLESS_ENC_FM_PORT" \
+        --arg uuid "$VLESS_UUID" \
+        --arg decryption "$VLESS_DECRYPTION" \
+        --argjson finalmask_json "${VLESS_ENC_FM_JSON:-null}" '
+        .inbounds = ((.inbounds // []) | map(select(.tag != $tag))) |
+        .inbounds += [{
+          "tag": $tag,
+          "listen": $listen,
+          "port": ($port|tonumber),
+          "protocol": "vless",
+          "settings": {
+            "clients": [
+              {
+                "id": $uuid,
+                "email": "tcp-finalmask@xray"
+              }
+            ],
+            "decryption": $decryption
+          },
+          "streamSettings": {
+            "network": "tcp",
+            "security": "none",
+            "finalmask": $finalmask_json
+          },
+          "sniffing": {
+            "enabled": true,
+            "destOverride": ["http", "tls"]
+          }
+        }]
+       ' "$config_source" >"$tmp"; then
+        rm -f "$tmp"
+        [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
+        err "[ENC-FinalMask] jq 生成配置失败。"
+        return 1
+    fi
+
+    if [[ "${VLESS_ENC_FM_DRY_RUN:-false}" == "true" ]]; then
+        write_test_config_out "$tmp" || {
+            rm -f "$tmp"
+            [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
+            return 1
+        }
+        rm -f "$tmp"
+        [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
+        return 0
+    fi
+    [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
+
+    mv "$tmp" "$CONFIG_FILE" || {
+        rm -f "$tmp"
+        err "[ENC-FinalMask] 写入 $CONFIG_FILE 失败。"
+        return 1
+    }
+
+    if ! apply_config "VLESS Encryption + FinalMask"; then
+        err "[ENC-FinalMask] 配置未通过 Xray 校验；sudoku FinalMask 需要较新的 Xray-core 支持。"
+        return 1
+    fi
+    state_set_vless_enc_finalmask || err "[状态] ENC-FinalMask 状态写入失败，但 config.json 已生效。"
+    state_set_meta_action "安装 VLESS Encryption + FinalMask" || err "[状态] 最近变更记录失败。"
+    ok "[完成] VLESS Encryption + FinalMask 已写入 Xray 配置。"
+    print_vless_enc_finalmask_result
+}
+
+print_vless_enc_finalmask_result() {
+    local missing_mode="${1:-skip}"
+    local state_exists link port uuid encryption auth
+
+    if [[ ! -f "$STATE_FILE" ]]; then
+        [[ "$missing_mode" == "show" ]] && echo "[ENC-FinalMask] 未安装。"
+        return 0
+    fi
+    state_exists="$(jq -r ".${VLESS_ENC_FM_STATE_KEY}.uuid // empty" "$STATE_FILE" 2>/dev/null)"
+    if [[ -z "$state_exists" ]]; then
+        [[ "$missing_mode" == "show" ]] && echo "[ENC-FinalMask] 未安装。"
+        return 0
+    fi
+
+    port="$(jq -r ".${VLESS_ENC_FM_STATE_KEY}.port // empty" "$STATE_FILE" 2>/dev/null)"
+    uuid="$(jq -r ".${VLESS_ENC_FM_STATE_KEY}.uuid // empty" "$STATE_FILE" 2>/dev/null)"
+    encryption="$(jq -r ".${VLESS_ENC_FM_STATE_KEY}.encryption // empty" "$STATE_FILE" 2>/dev/null)"
+    auth="$(jq -r ".${VLESS_ENC_FM_STATE_KEY}.auth // \"x25519\"" "$STATE_FILE" 2>/dev/null)"
+    link="$(build_vless_enc_finalmask_share_link 2>/dev/null || jq -r ".${VLESS_ENC_FM_STATE_KEY}.link // empty" "$STATE_FILE" 2>/dev/null)"
+
+    echo -e "\n${YELLOW}--- VLESS Encryption + FinalMask (sudoku) ---${PLAIN}"
+    echo -e "端口: ${port}"
+    echo -e "UUID: ${uuid}"
+    echo -e "认证: ${auth}"
+    echo -e "FinalMask: sudoku (tcp)"
+    if [[ -z "$encryption" ]]; then
+        err "[提示] 缺少客户端 encryption，无法生成完整链接。请重装该协议。"
+    else
+        echo -e "客户端 encryption: ${encryption}"
+        [[ -n "$link" ]] && echo -e "链接: ${link}"
+    fi
+}

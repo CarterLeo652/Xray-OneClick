@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.1.16
+- 新增协议「VLESS Encryption + XHTTP」(纯净,不含 FinalMask/REALITY):菜单第 7 项与 CLI `ike enc-xhttp install|show|remove`(支持 `--port/--path/--auth/--dry-run`);生成 `protocol:vless / network:xhttp / security:none` 的加密入站,接入 view 链接、导出摘要、卸载菜单与离线配置生成测试。
+
+## 1.1.15
+- 新增协议「VLESS Encryption + FinalMask（sudoku，TCP）」：菜单第 7 项与 CLI `ike enc-finalmask install|show|remove`；生成 `streamSettings.finalmask = {tcp:[{type:"sudoku"}]}` 的 VLESS 加密 TCP 入站（`security:none`），并接入 view 链接、导出摘要、卸载菜单与离线配置生成测试。FinalMask(sudoku) 需较新 Xray-core 支持。
+
 ## 1.1.14
 - 修复 `scripts/bootstrap.sh`：提取版本号时 grep 在 `install.sh` 中找不到 `SCRIPT_VERSION`（已移至 `lib/01-constants.sh`），叠加 `set -euo pipefail` 导致命令替换失败、一键安装在打印「下载…」后静默退出；改为容错（失败不中断）并回退到 `lib/01-constants.sh` 获取版本
 - 修复 `curl ... | sudo bash` 管道方式下 stdin 被占用、交互菜单及所有 `read` 立即 EOF 空转退出：`install.sh` 进入交互逻辑前若检测到非 tty 且 `/dev/tty` 可读则 `exec </dev/tty`

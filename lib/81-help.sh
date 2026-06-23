@@ -74,6 +74,16 @@ Xray-OneClick 命令帮助
   ike xhttp install --port 30005 --path /api/demo --finalmask on --dry-run
   ike xhttp show
   ike xhttp remove
+  ike enc-finalmask install
+  ike enc-finalmask install --dry-run
+  ike enc-finalmask install --port 8444 --auth x25519
+  ike enc-finalmask show
+  ike enc-finalmask remove
+  ike enc-xhttp install
+  ike enc-xhttp install --dry-run
+  ike enc-xhttp install --port 30005 --path /api/demo --auth x25519
+  ike enc-xhttp show
+  ike enc-xhttp remove
   ike view reality
   ike view xhttp
   ike xhttp-reality install

@@ -823,3 +823,244 @@ remove_vless_xhttp_finalmask_config() {
     state_set_meta_action "删除 VLESS Encryption + XHTTP + FinalMask" || err "[状态] 最近变更记录失败。"
     ok "[完成] VLESS Encryption + XHTTP + FinalMask 已删除。"
 }
+
+# ---------------------------------------------------------------------------
+# VLESS Encryption + XHTTP (plain, no FinalMask / no REALITY)
+# ---------------------------------------------------------------------------
+
+configure_vless_enc_xhttp() {
+    local mode="${1:-interactive}"
+    local input port
+
+    VLESS_MODE="${VLESS_MODE:-basic}"
+    VLESS_ENC_METHOD="${VLESS_ENC_METHOD:-native}"
+    VLESS_CLIENT_RTT="${VLESS_CLIENT_RTT:-0rtt}"
+    VLESS_SERVER_TICKET="${VLESS_SERVER_TICKET:-600s}"
+    VLESS_AUTH="${VLESS_AUTH:-x25519}"
+    ENC_XHTTP_LISTEN="0.0.0.0"
+
+    if [[ "$mode" == "interactive" ]]; then
+        ask_vless_auth
+        while true; do
+            read -r -p "XHTTP 入口端口 (回车随机 20000-50000): " input
+            if [[ -z "$input" ]]; then
+                port="$(random_free_port 20000 50000)" || return 1
+                info "[XHTTP] 随机选择端口: ${port}"
+                ENC_XHTTP_PORT="$port"
+                break
+            fi
+            if validate_port "$input" && ! port_used_in_config "$input" && check_port "$input"; then
+                ENC_XHTTP_PORT="$input"
+                break
+            fi
+            err "[XHTTP] 端口无效、被占用或已存在于 config.json。"
+        done
+        read -r -p "XHTTP path (回车随机): " input
+        ENC_XHTTP_PATH="${input:-$(random_xhttp_path)}"
+    else
+        if [[ -n "${ENC_XHTTP_PORT_REQUEST:-}" ]]; then
+            validate_port "$ENC_XHTTP_PORT_REQUEST" || {
+                err "[XHTTP] 端口无效: $ENC_XHTTP_PORT_REQUEST"
+                return 1
+            }
+            if port_used_in_config "$ENC_XHTTP_PORT_REQUEST" || ! check_port "$ENC_XHTTP_PORT_REQUEST"; then
+                err "[XHTTP] 端口已被占用或已存在于 config.json: $ENC_XHTTP_PORT_REQUEST"
+                return 1
+            fi
+            ENC_XHTTP_PORT="$ENC_XHTTP_PORT_REQUEST"
+        else
+            ENC_XHTTP_PORT="$(random_free_port 20000 50000)" || return 1
+        fi
+        ENC_XHTTP_PATH="${ENC_XHTTP_PATH_REQUEST:-$(random_xhttp_path)}"
+    fi
+
+    validate_xhttp_path "$ENC_XHTTP_PATH" || {
+        err "[XHTTP] path 无效，必须以 / 开头，长度不超过 128，且不能包含空格、?、# 或反斜杠。"
+        return 1
+    }
+
+    VLESS_UUID="$(generate_uuid)" || return 1
+    generate_vless_encryption_pair "$VLESS_AUTH" || return 1
+}
+
+build_vless_enc_xhttp_share_link() {
+    local port="${ENC_XHTTP_PORT:-}"
+    local path="${ENC_XHTTP_PATH:-}"
+    local uuid="${VLESS_UUID:-}"
+    local encryption="${VLESS_ENCRYPTION:-}"
+    local host link_port endpoint_pair enc_uri path_uri name_uri
+
+    if [[ -z "$port" && -f "$STATE_FILE" ]]; then
+        port="$(jq -r ".${VLESS_ENC_XHTTP_STATE_KEY}.port // empty" "$STATE_FILE" 2>/dev/null)"
+        path="$(jq -r ".${VLESS_ENC_XHTTP_STATE_KEY}.path // empty" "$STATE_FILE" 2>/dev/null)"
+        uuid="$(jq -r ".${VLESS_ENC_XHTTP_STATE_KEY}.uuid // empty" "$STATE_FILE" 2>/dev/null)"
+        encryption="$(jq -r ".${VLESS_ENC_XHTTP_STATE_KEY}.encryption // empty" "$STATE_FILE" 2>/dev/null)"
+    fi
+
+    [[ -n "$port" && -n "$path" && -n "$uuid" && -n "$encryption" ]] || return 1
+    endpoint_pair="$(link_endpoint_for_tag "$port" "$VLESS_ENC_XHTTP_TAG" "$VLESS_ENC_XHTTP_STATE_KEY")"
+    IFS=$'\t' read -r host link_port <<<"$endpoint_pair"
+    enc_uri="$(url_encode "$encryption")"
+    path_uri="$(url_encode "$path")"
+    name_uri="$(url_encode "Xray-ENC-XHTTP")"
+
+    printf 'vless://%s@%s:%s?type=xhttp&security=none&path=%s&encryption=%s#%s' \
+        "$uuid" "$host" "$link_port" "$path_uri" "$enc_uri" "$name_uri"
+}
+
+state_set_vless_enc_xhttp() {
+    init_state
+    local tmp link timestamp
+    link="$(build_vless_enc_xhttp_share_link || true)"
+    timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    tmp="$(mktemp)"
+    jq --arg key "$VLESS_ENC_XHTTP_STATE_KEY" \
+        --arg tag "$VLESS_ENC_XHTTP_TAG" \
+        --arg uuid "$VLESS_UUID" \
+        --arg encryption "$VLESS_ENCRYPTION" \
+        --arg auth "$VLESS_AUTH" \
+        --arg enc_method "$VLESS_ENC_METHOD" \
+        --arg client_rtt "$VLESS_CLIENT_RTT" \
+        --arg server_ticket "$VLESS_SERVER_TICKET" \
+        --arg port "$ENC_XHTTP_PORT" \
+        --arg path "$ENC_XHTTP_PATH" \
+        --arg link "$link" \
+        --arg updated "$timestamp" \
+        --arg listen_scope "$(protocol_listen_scope "${ENC_XHTTP_LISTEN:-}")" '
+        .[$key] = {
+          "tag": $tag,
+          "uuid": $uuid,
+          "encryption": $encryption,
+          "auth": $auth,
+          "mode": "basic",
+          "enc_method": $enc_method,
+          "client_rtt": $client_rtt,
+          "server_ticket": $server_ticket,
+          "port": ($port|tonumber),
+          "path": $path,
+          "link": $link,
+          "listen_scope": $listen_scope,
+          "updated_at": $updated
+        }
+       ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
+    rm -f "$tmp"
+    ensure_config_security
+}
+
+install_vless_enc_xhttp() {
+    local tmp config_source base_tmp
+
+    config_source="$CONFIG_FILE"
+    if [[ "${ENC_XHTTP_DRY_RUN:-false}" == "true" && ! -f "$config_source" ]]; then
+        base_tmp="$(mktemp)" || return 1
+        printf '{"log":{"loglevel":"warning"},"inbounds":[],"outbounds":[{"tag":"direct","protocol":"freedom"}],"routing":{"rules":[]}}\n' >"$base_tmp"
+        config_source="$base_tmp"
+    fi
+    if [[ "${ENC_XHTTP_DRY_RUN:-false}" != "true" ]]; then
+        backup_config || {
+            err "[ENC-XHTTP] 配置备份失败。"
+            return 1
+        }
+    fi
+
+    tmp="$(mktemp)" || return 1
+    if ! MSYS2_ENV_CONV_EXCL="ENC_XHTTP_JQ_PATH" ENC_XHTTP_JQ_PATH="$ENC_XHTTP_PATH" jq --arg tag "$VLESS_ENC_XHTTP_TAG" \
+        --arg listen "${ENC_XHTTP_LISTEN:-0.0.0.0}" \
+        --arg port "$ENC_XHTTP_PORT" \
+        --arg uuid "$VLESS_UUID" \
+        --arg decryption "$VLESS_DECRYPTION" '
+        .inbounds = ((.inbounds // []) | map(select(.tag != $tag))) |
+        .inbounds += [{
+          "tag": $tag,
+          "listen": $listen,
+          "port": ($port|tonumber),
+          "protocol": "vless",
+          "settings": {
+            "clients": [
+              {
+                "id": $uuid,
+                "email": "enc-xhttp@xray"
+              }
+            ],
+            "decryption": $decryption
+          },
+          "streamSettings": {
+            "network": "xhttp",
+            "security": "none",
+            "xhttpSettings": {
+              "path": env.ENC_XHTTP_JQ_PATH
+            }
+          },
+          "sniffing": {
+            "enabled": true,
+            "destOverride": ["http", "tls"]
+          }
+        }]
+       ' "$config_source" >"$tmp"; then
+        rm -f "$tmp"
+        [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
+        err "[ENC-XHTTP] jq 生成配置失败。"
+        return 1
+    fi
+
+    if [[ "${ENC_XHTTP_DRY_RUN:-false}" == "true" ]]; then
+        write_test_config_out "$tmp" || {
+            rm -f "$tmp"
+            [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
+            return 1
+        }
+        rm -f "$tmp"
+        [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
+        return 0
+    fi
+    [[ -n "${base_tmp:-}" ]] && rm -f "$base_tmp"
+
+    mv "$tmp" "$CONFIG_FILE" || {
+        rm -f "$tmp"
+        err "[ENC-XHTTP] 写入 $CONFIG_FILE 失败。"
+        return 1
+    }
+
+    if ! apply_config "VLESS Encryption + XHTTP"; then
+        print_xhttp_failure_hint
+        return 1
+    fi
+    state_set_vless_enc_xhttp || err "[状态] ENC-XHTTP 状态写入失败，但 config.json 已生效。"
+    state_set_meta_action "安装 VLESS Encryption + XHTTP" || err "[状态] 最近变更记录失败。"
+    ok "[完成] VLESS Encryption + XHTTP 已写入 Xray 配置。"
+    print_vless_enc_xhttp_result
+}
+
+print_vless_enc_xhttp_result() {
+    local missing_mode="${1:-skip}"
+    local state_exists link port path uuid encryption auth
+
+    if [[ ! -f "$STATE_FILE" ]]; then
+        [[ "$missing_mode" == "show" ]] && echo "[ENC-XHTTP] 未安装。"
+        return 0
+    fi
+    state_exists="$(jq -r ".${VLESS_ENC_XHTTP_STATE_KEY}.uuid // empty" "$STATE_FILE" 2>/dev/null)"
+    if [[ -z "$state_exists" ]]; then
+        [[ "$missing_mode" == "show" ]] && echo "[ENC-XHTTP] 未安装。"
+        return 0
+    fi
+
+    port="$(jq -r ".${VLESS_ENC_XHTTP_STATE_KEY}.port // empty" "$STATE_FILE" 2>/dev/null)"
+    path="$(jq -r ".${VLESS_ENC_XHTTP_STATE_KEY}.path // empty" "$STATE_FILE" 2>/dev/null)"
+    uuid="$(jq -r ".${VLESS_ENC_XHTTP_STATE_KEY}.uuid // empty" "$STATE_FILE" 2>/dev/null)"
+    encryption="$(jq -r ".${VLESS_ENC_XHTTP_STATE_KEY}.encryption // empty" "$STATE_FILE" 2>/dev/null)"
+    auth="$(jq -r ".${VLESS_ENC_XHTTP_STATE_KEY}.auth // \"x25519\"" "$STATE_FILE" 2>/dev/null)"
+    link="$(build_vless_enc_xhttp_share_link 2>/dev/null || jq -r ".${VLESS_ENC_XHTTP_STATE_KEY}.link // empty" "$STATE_FILE" 2>/dev/null)"
+
+    echo -e "\n${YELLOW}--- VLESS Encryption + XHTTP ---${PLAIN}"
+    echo -e "端口: ${port}"
+    echo -e "Path: ${path}"
+    echo -e "UUID: ${uuid}"
+    echo -e "认证: ${auth}"
+    if [[ -z "$encryption" ]]; then
+        err "[提示] 缺少客户端 encryption，无法生成完整链接。请重装该协议。"
+    else
+        echo -e "客户端 encryption: ${encryption}"
+        [[ -n "$link" ]] && echo -e "链接: ${link}"
+    fi
+}

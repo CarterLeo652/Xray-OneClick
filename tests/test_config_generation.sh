@@ -16,6 +16,8 @@ XHTTP_TAG="vless-enc-xhttp-finalmask-in"
 XHTTP_REALITY_TAG="vless+xhttp+reality"
 ENC_REALITY_TAG="vless+enc+reality"
 FULLSTACK_TAG="vless+enc+xhttp+reality+finalmask"
+ENC_FM_TAG="vless-enc-tcp-finalmask-in"
+ENC_XHTTP_TAG="vless-enc-xhttp-in"
 
 cleanup() {
     rm -rf "$TMP_DIR"
@@ -147,6 +149,40 @@ assert_finalmask_balanced() {
     ' "$config" >/dev/null || fail "FinalMask balanced 配置不合法: tag=$tag config=$config"
 }
 
+assert_finalmask_sudoku() {
+    local config="$1"
+    local tag="$2"
+
+    jq -e --arg tag "$tag" '
+      (.inbounds[]? | select(.tag == $tag).streamSettings.finalmask) as $fm |
+      ($fm | type == "object") and
+      ($fm.tcp | type == "array") and
+      ($fm.tcp[0].type == "sudoku")
+    ' "$config" >/dev/null || fail "FinalMask sudoku 配置不合法: tag=$tag config=$config"
+}
+
+assert_tcp_security_none() {
+    local config="$1"
+    local tag="$2"
+
+    jq -e --arg tag "$tag" '
+      (.inbounds[]? | select(.tag == $tag).streamSettings) as $ss |
+      ($ss.network == "tcp") and ($ss.security == "none")
+    ' "$config" >/dev/null || fail "ENC-FinalMask 入站 network/security 不正确: tag=$tag config=$config"
+}
+
+assert_xhttp_plain() {
+    local config="$1"
+    local tag="$2"
+
+    jq -e --arg tag "$tag" '
+      (.inbounds[]? | select(.tag == $tag).streamSettings) as $ss |
+      ($ss.network == "xhttp") and ($ss.security == "none") and
+      ($ss.xhttpSettings | type == "object") and ($ss.xhttpSettings | has("path")) and
+      (($ss | has("finalmask")) | not)
+    ' "$config" >/dev/null || fail "ENC-XHTTP 入站结构不正确(应为 xhttp/none/含xhttpSettings.path/无finalmask): tag=$tag config=$config"
+}
+
 assert_fallback_limit() {
     local config="$1"
     local tag="$2"
@@ -187,5 +223,12 @@ assert_finalmask_balanced "$LAST_CONFIG" "$FULLSTACK_TAG"
 run_case "xhttp_reality_fallback_limit" xhttp-reality --port 30009 --path /api/xhttp-reality-limit --sni www.microsoft.com --fallback-limit conservative
 assert_reality_target "$LAST_CONFIG" "$XHTTP_REALITY_TAG"
 assert_fallback_limit "$LAST_CONFIG" "$XHTTP_REALITY_TAG"
+
+run_case "enc_finalmask" enc-finalmask --port 30010
+assert_finalmask_sudoku "$LAST_CONFIG" "$ENC_FM_TAG"
+assert_tcp_security_none "$LAST_CONFIG" "$ENC_FM_TAG"
+
+run_case "enc_xhttp" enc-xhttp --port 30011 --path /api/enc-xhttp
+assert_xhttp_plain "$LAST_CONFIG" "$ENC_XHTTP_TAG"
 
 echo "[OK] 离线配置生成测试全部通过"
