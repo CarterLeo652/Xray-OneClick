@@ -152,7 +152,8 @@ output_log="$(log_dir_path)/access.log"
 error_log="$(log_dir_path)/error.log"
 
 depend() {
-    need net
+    use net
+    after net firewall
 }
 
 start_pre() {

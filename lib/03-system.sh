@@ -108,6 +108,19 @@ preflight_arch() {
         aarch64 | arm64)
             diag_ok "架构: arm64"
             ;;
+        i386 | i686)
+            diag_ok "架构: 386"
+            ;;
+        armv7l | armv7* | armv6l | armv6* | armv5l | armv5*)
+            diag_ok "架构: arm32 ($machine)"
+            ;;
+        riscv64)
+            diag_ok "架构: riscv64"
+            ;;
+        s390x | ppc64le | ppc64 | loongarch64 | loong64)
+            # 这些架构 detect_arch 支持下载，但官方测试覆盖有限；Alpine 仅支持 musl 架构。
+            diag_warn "架构: $machine（受支持但测试覆盖有限，请实测验证）"
+            ;;
         *)
             diag_fail "不支持的架构: $machine"
             return 1

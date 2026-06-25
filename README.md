@@ -4,11 +4,11 @@ Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在
 
 脚本支持 Shadowsocks 2022、VLESS Encryption、VLESS TCP REALITY、VLESS Encryption + XHTTP + FinalMask、VLESS Encryption + XHTTP、VLESS Encryption + FinalMask（sudoku）、SOCKS5、Hysteria2，以及高级协议组合与 Tunnel 中转管理。默认带基础安全屏蔽、配置备份、服务诊断、配置导出、Xray-core 升级和安全卸载能力，并提供 stable / prerelease 两条 Xray-core 通道。
 
-当前版本：**1.1.18**（与 `VERSION` / `ike version` 一致）
+当前版本：**1.1.19**（与 `VERSION` / `ike version` 一致）
 
 状态：正式版
 
-说明：1.1.18 修复了 VLESS Encryption（含 +FinalMask / +XHTTP / 高级组合）在生成密钥前未安装或 Xray 过旧导致 `xray vlessenc` 失败的问题，新增 `ensure_xray_vlessenc` 自愈逻辑（必要时自动强制升级并复验）；将「重置密钥/密码」覆盖范围扩展到全部 VLESS 与 REALITY 系列协议（REALITY 会轮换密钥对，老客户端需重新导入链接）；补全旧配置迁移的 `listen_scope` 回填；并新增 `.gitattributes` 强制 LF 行尾。普通 VLESS TCP REALITY 默认使用 `xtls-rprx-vision`；高级 Reality 组合默认不启用 Vision flow，可按需用 `--flow vision` 试验开启。
+说明：1.1.19 着重修复 Alpine 全链路：引导脚本 `scripts/bootstrap.sh` 改为 POSIX `sh`，全新 Alpine 无需预装 bash/sudo（自动 `apk add bash`/`curl` 后再用 bash 运行安装器）；`preflight` 架构检测放行 arm32/riscv64 等 `detect_arch` 已支持的架构；OpenRC 服务依赖由 `need net` 改为 `use net`（避免无 net 服务的容器无法启动）；并同步修正 README 卸载菜单与若干菜单项号。上一版 1.1.18 修复了 VLESS Encryption（含 +FinalMask / +XHTTP / 高级组合）的 `xray vlessenc` 自愈与「重置密钥/密码」全协议覆盖。普通 VLESS TCP REALITY 默认使用 `xtls-rprx-vision`；高级 Reality 组合默认不启用 Vision flow，可按需用 `--flow vision` 试验开启。
 
 ## 功能特性
 
@@ -59,9 +59,21 @@ ike preflight
 
 **一行安装（推荐，含 Alpine）：**
 
+引导脚本使用 POSIX `sh` 编写，全新 Alpine 无需预装 bash、也不依赖 sudo——它会在需要时自动 `apk add bash`/`curl`，再用 bash 运行安装器。
+
+Debian / Ubuntu / RHEL 系（有 sudo）：
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ike-sh/Xray-OneClick/main/scripts/bootstrap.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/ike-sh/Xray-OneClick/main/scripts/bootstrap.sh | sudo sh
 ```
+
+Alpine 或已是 root：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ike-sh/Xray-OneClick/main/scripts/bootstrap.sh | sh
+```
+
+> 说明：Alpine 默认没有 bash 与 sudo。请直接以 root 运行 `| sh`（不要加 sudo）；如系统有 `wget` 没 `curl`，也可用 `wget -qO- <url> | sh`。
 
 或传统方式：
 
@@ -404,12 +416,12 @@ ike xhttp install --finalmask on --finalmask-json '{"tcp":[{"type":"fragment","s
 
 ## 高级协议组合
 
-高级协议组合已直接放在主菜单第 7、8、9 项：
+高级协议组合已直接放在主菜单第 9、10、11 项：
 
 ```text
-7. 安装 VLESS XHTTP + REALITY（高级）
-8. 安装 VLESS Encryption + REALITY（高级）
-9. 安装 VLESS Encryption + XHTTP + REALITY + FinalMask（FullStack）
+9. 安装 VLESS XHTTP + REALITY（高级）
+10. 安装 VLESS Encryption + REALITY（高级）
+11. 安装 VLESS Encryption + XHTTP + REALITY + FinalMask（FullStack）
 ```
 
 高级组合适合已经确认普通节点可用、并且需要更前沿组合的用户。普通用户建议优先使用普通 Reality。高级组合不使用 TLS 证书，默认都是 `security=reality`，不是 `security=tls`。这些组合会把 `realitySettings.target` 直接写成 `<sni>:443`，未通过 REALITY 认证的流量会被转发到 target；如果想更保守，可以加 `--fallback-limit conservative`，脚本会写入随机化的 `limitFallbackUpload` / `limitFallbackDownload`。
@@ -530,7 +542,7 @@ ike fullstack install --finalmask off
 通过菜单安装：
 
 ```text
-10. 安装 SOCKS5 代理
+12. 安装 SOCKS5 代理
 ```
 
 SOCKS5 适合临时代理或内网调试。安装后可通过 `ike view` 查看连接参数。脚本只会在 SOCKS5 入站实际监听 IPv6/双栈时输出 IPv6 链接；默认 IPv4-only 监听不会输出不可用的 IPv6 链接。
@@ -540,7 +552,7 @@ SOCKS5 适合临时代理或内网调试。安装后可通过 `ike view` 查看�
 通过菜单进入：
 
 ```text
-18. Tunnel 中转管理
+21. Tunnel 中转管理
 ```
 
 常用命令：
@@ -581,7 +593,7 @@ ike endpoint clear
 ike endpoint detect
 ```
 
-显示模式可在菜单第 12 项切换，也可通过：
+显示模式可在菜单第 15 项切换，也可通过：
 
 ```bash
 ike view ipv4
@@ -786,20 +798,23 @@ ike migrate
 
 ## 卸载与清理
 
-主菜单第 14 项进入卸载/清理菜单：
+主菜单第 17 项进入卸载/清理菜单：
 
 ```text
-1. 删除 SS2022 配置
-2. 删除 VLESS Encryption 配置
-3. 删除 VLESS TCP REALITY 配置
-4. 删除 VLESS Encryption + XHTTP + FinalMask 配置
-5. 删除 VLESS XHTTP + REALITY 配置
-6. 删除 VLESS Encryption + REALITY 配置
-7. 删除 VLESS Encryption + XHTTP + REALITY + FinalMask 配置
-8. 删除 SOCKS5 配置
-9. 卸载全部 Xray
-10. 清理旧 sing-box 残留
-11. 返回主菜单
+ 1) 删除 SS2022 配置
+ 2) 删除 VLESS Encryption 配置
+ 3) 删除 VLESS TCP REALITY 配置
+ 4) 删除 VLESS Encryption + XHTTP + FinalMask 配置
+ 5) 删除 VLESS Encryption + XHTTP 配置
+ 6) 删除 VLESS Encryption + FinalMask (sudoku) 配置
+ 7) 删除 VLESS XHTTP + REALITY 配置
+ 8) 删除 VLESS Encryption + REALITY 配置
+ 9) 删除 VLESS Encryption + XHTTP + REALITY + FinalMask 配置
+10) 删除 SOCKS5 配置
+11) 删除 Hysteria2 配置
+12) 卸载全部 Xray
+13) 清理旧 sing-box 残留
+14) 返回主菜单
 ```
 
 保留配置卸载：
