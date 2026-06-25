@@ -118,7 +118,7 @@ preflight_arch() {
             diag_ok "架构: riscv64"
             ;;
         s390x | ppc64le | ppc64 | loongarch64 | loong64)
-            # 这些架构 detect_arch 支持下载，但官方测试覆盖有限；Alpine 仅支持 musl 架构。
+            # 这些架构 detect_arch 支持下载，但官方测试覆盖有限，请实测验证。
             diag_warn "架构: $machine（受支持但测试覆盖有限，请实测验证）"
             ;;
         *)

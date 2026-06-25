@@ -4,11 +4,11 @@ Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在
 
 脚本支持 Shadowsocks 2022、VLESS Encryption、VLESS TCP REALITY、VLESS Encryption + XHTTP + FinalMask、VLESS Encryption + XHTTP、VLESS Encryption + FinalMask（sudoku）、SOCKS5、Hysteria2，以及高级协议组合与 Tunnel 中转管理。默认带基础安全屏蔽、配置备份、服务诊断、配置导出、Xray-core 升级和安全卸载能力，并提供 stable / prerelease 两条 Xray-core 通道。
 
-当前版本：**1.1.19**（与 `VERSION` / `ike version` 一致）
+当前版本：**1.1.20**（与 `VERSION` / `ike version` 一致）
 
 状态：正式版
 
-说明：1.1.19 着重修复 Alpine 全链路：引导脚本 `scripts/bootstrap.sh` 改为 POSIX `sh`，全新 Alpine 无需预装 bash/sudo（自动 `apk add bash`/`curl` 后再用 bash 运行安装器）；`preflight` 架构检测放行 arm32/riscv64 等 `detect_arch` 已支持的架构；OpenRC 服务依赖由 `need net` 改为 `use net`（避免无 net 服务的容器无法启动）；并同步修正 README 卸载菜单与若干菜单项号。上一版 1.1.18 修复了 VLESS Encryption（含 +FinalMask / +XHTTP / 高级组合）的 `xray vlessenc` 自愈与「重置密钥/密码」全协议覆盖。普通 VLESS TCP REALITY 默认使用 `xtls-rprx-vision`；高级 Reality 组合默认不启用 Vision flow，可按需用 `--flow vision` 试验开启。
+说明：1.1.20 修复了一个会导致 **Alpine 安装直接失败的关键 BUG**：`detect_arch` 之前在 Alpine 上拼接 `-musl` 后缀去下载 `Xray-linux-64-musl.zip`，但官方 XTLS/Xray-core 根本不发布 `-musl` 包（Linux 构建为 `CGO_ENABLED=0` 静态 Go 二进制，在 musl/glibc 上均可直接运行），导致 Alpine 下载不到资产而安装失败；现统一使用官方标准包（如 `Xray-linux-64.zip`）。1.1.19 将引导脚本改为 POSIX `sh`（Alpine 自动 `apk add bash`）、放行 `preflight` 更多架构、OpenRC `need net` 改 `use net`。版本来源：官方 XTLS/Xray-core，默认安装 `latest`（当前 v26.3.27）；VLESS Encryption / FinalMask(sudoku) / Hysteria2 等高级特性需 Xray-core v26+。普通 VLESS TCP REALITY 默认使用 `xtls-rprx-vision`；高级 Reality 组合默认不启用 Vision flow，可按需用 `--flow vision` 试验开启。
 
 ## 功能特性
 
@@ -43,7 +43,7 @@ Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在
 - amd64 / arm64
 - curl 或 wget
 
-Alpine 会自动下载 **musl** 版 Xray 压缩包（如 `Xray-linux-64-musl.zip`），并使用 `/etc/init.d/xray` 管理服务。
+Alpine 直接使用官方静态 Xray Linux 包（如 `Xray-linux-64.zip`）。官方 Xray-core 的 Linux 构建是 `CGO_ENABLED=0` 的静态 Go 二进制，在 glibc 与 musl(Alpine) 上均可直接运行，官方并不单独发布 `-musl` 包；服务使用 `/etc/init.d/xray`（OpenRC）管理。
 
 脚本会自动补齐常用依赖，例如 `jq`、`unzip`、`tar`、`openssl`。端口监听检查优先使用 `ss`，没有 `ss` 时会降级处理。
 

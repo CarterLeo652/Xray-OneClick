@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 1.1.20
+- **关键修复（Alpine 安装失败）**：`detect_arch` 之前在 Alpine 上拼接 `-musl` 后缀下载 `Xray-linux-64-musl.zip`，但官方 XTLS/Xray-core 不发布 `-musl` 包（Linux 为 `CGO_ENABLED=0` 静态 Go 二进制，musl/glibc 通用），导致 Alpine 资产 404 安装失败；现统一使用官方标准包（如 `Xray-linux-64.zip`），并移除多余的 `alpine_uses_musl_asset` 门禁。
+- README/注释同步：去除「下载 musl 版 Xray 包」表述，改为说明静态二进制兼容 musl。
+
+## 1.1.19
+- **Alpine 全链路修复**：`scripts/bootstrap.sh` 重写为 POSIX `sh`，全新 Alpine 无需预装 bash/sudo（自动 `apk add bash`/`curl` 后再用 bash 运行安装器），支持 curl 或 wget，非 root 兼容 doas/无 sudo 提示。
+- `preflight_arch` 放行 `detect_arch` 已支持的 arm32(armv7/armv6/armv5)/riscv64/i386 架构，少见架构降级 warn，消除 Alpine ARM32 误报「不支持架构」。
+- OpenRC init 依赖 `need net` → `use net` + `after net firewall`，避免无 net 服务的容器/LXC 无法启动或开机自启失败。
+- 修正 `lib/01-constants.sh` `SCRIPT_VERSION`（此前停在 1.1.17 未随 1.1.18 同步，导致 `ike version` 与 `VERSION` 不一致，CI 版本一致性校验会失败）。
+- README 文档漂移修正：卸载子菜单更新为实际 14 项；修正高级组合(9/10/11)、SOCKS5(12)、Tunnel(21)、显示模式(15)、卸载入口(17) 等菜单项号。
+
+## 1.1.18
+- VLESS Encryption（含 +FinalMask / +XHTTP / 高级组合）在生成密钥前新增 `ensure_xray_vlessenc` 自愈：确保 Xray 已安装且支持 `vlessenc`，过旧则自动强制升级并复验，修复 `xray vlessenc` 执行失败导致安装中断。
+- 「重置密钥/密码」(菜单第 16 项) 扩展覆盖全部 VLESS 与 REALITY 系列协议（REALITY 轮换密钥对，老客户端需重新导入链接）。
+- `migrate_old_state` 补全 `vless_enc_finalmask` / `vless_enc_xhttp` 的 `listen_scope` 回填。
+- 移除 6 个孤立未调用函数；新增 `.gitattributes` 强制 LF 行尾。
+
 ## 1.1.17
 - 新增协议「Hysteria2」(QUIC/TLS,自签证书 + Salamander obfs):菜单第 13 项与 CLI `ike hysteria2 install|show|remove`(`--port/--sni/--dry-run`);自动生成自签证书、认证密码与 obfs 密码,分享链接含 `insecure=1`。需 Xray-core v26+。
 - FinalMask sudoku 现生成随机 `password`(双端共享密钥,经 `fm` 链接下发),修正原裸 `{type:sudoku}` 无密钥、外观可预测的问题。
