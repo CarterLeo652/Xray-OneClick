@@ -4,11 +4,11 @@ Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在
 
 脚本支持 Shadowsocks 2022、VLESS Encryption、VLESS TCP REALITY、VLESS Encryption + XHTTP + FinalMask、VLESS Encryption + XHTTP、VLESS Encryption + FinalMask（sudoku）、SOCKS5、Hysteria2，以及高级协议组合与 Tunnel 中转管理。默认带基础安全屏蔽、配置备份、服务诊断、配置导出、Xray-core 升级和安全卸载能力，并提供 stable / prerelease 两条 Xray-core 通道。
 
-当前版本：**1.1.20**（与 `VERSION` / `ike version` 一致）
+当前版本：**1.1.21**（与 `VERSION` / `ike version` 一致）
 
 状态：正式版
 
-说明：1.1.20 修复了一个会导致 **Alpine 安装直接失败的关键 BUG**：`detect_arch` 之前在 Alpine 上拼接 `-musl` 后缀去下载 `Xray-linux-64-musl.zip`，但官方 XTLS/Xray-core 根本不发布 `-musl` 包（Linux 构建为 `CGO_ENABLED=0` 静态 Go 二进制，在 musl/glibc 上均可直接运行），导致 Alpine 下载不到资产而安装失败；现统一使用官方标准包（如 `Xray-linux-64.zip`）。1.1.19 将引导脚本改为 POSIX `sh`（Alpine 自动 `apk add bash`）、放行 `preflight` 更多架构、OpenRC `need net` 改 `use net`。版本来源：官方 XTLS/Xray-core，默认安装 `latest`（当前 v26.3.27）；VLESS Encryption / FinalMask(sudoku) / Hysteria2 等高级特性需 Xray-core v26+。普通 VLESS TCP REALITY 默认使用 `xtls-rprx-vision`；高级 Reality 组合默认不启用 Vision flow，可按需用 `--flow vision` 试验开启。
+说明：1.1.21 为健壮性补丁：SOCKS5 安装/状态写入由 `jq … && mv` 改为严谨写法（jq 失败即报错回滚，不再静默误报成功）；修复 CLI 取值类 `--flag` 置于命令末尾且缺省值时 `shift 2` 导致的参数解析死循环（改为 `shift; shift`，缺值时回落到交互/默认值）；并完成全仓逐文件 BUG 走查。1.1.20 修复了一个会导致 **Alpine 安装直接失败的关键 BUG**：`detect_arch` 之前在 Alpine 上拼接 `-musl` 后缀去下载 `Xray-linux-64-musl.zip`，但官方 XTLS/Xray-core 根本不发布 `-musl` 包（Linux 构建为 `CGO_ENABLED=0` 静态 Go 二进制，在 musl/glibc 上均可直接运行），导致 Alpine 下载不到资产而安装失败；现统一使用官方标准包（如 `Xray-linux-64.zip`）。1.1.19 将引导脚本改为 POSIX `sh`（Alpine 自动 `apk add bash`）、放行 `preflight` 更多架构、OpenRC `need net` 改 `use net`。版本来源：官方 XTLS/Xray-core，默认安装 `latest`（当前 v26.3.27）；VLESS Encryption / FinalMask(sudoku) / Hysteria2 等高级特性需 Xray-core v26+。普通 VLESS TCP REALITY 默认使用 `xtls-rprx-vision`；高级 Reality 组合默认不启用 Vision flow，可按需用 `--flow vision` 试验开启。
 
 ## 功能特性
 

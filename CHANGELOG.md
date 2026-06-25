@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.1.21
+- **健壮性修复（SOCKS5）**：`install_socks5` / `state_set_socks5` 由 `jq … >tmp && mv` 精简写法改为全仓一致的严谨写法（jq 失败即 `rm tmp` + 报错 + `return 1`），并为 `backup_config`/`mktemp` 补失败判断，杜绝 jq 静默失败却误报「安装完成」。
+- **健壮性修复（CLI 参数解析）**：取值类 `--flag` 作为命令末尾且缺省值时，`shift 2` 在剩余参数 <2 时不位移，导致 `while` 解析循环死循环；`lib/74-cli-protocols.sh` 与 `lib/90-test-harness.sh` 解析循环中的 `shift 2` 统一改为 `shift; shift`（≥2 个参数时等价，缺值时干净退出并回落到交互/默认值）。
+- 完成全仓逐文件 BUG 走查（含 `lib/56-tunnel.sh` 2451 行端到端核对），未发现新的中/高危问题。
+
 ## 1.1.20
 - **关键修复（Alpine 安装失败）**：`detect_arch` 之前在 Alpine 上拼接 `-musl` 后缀下载 `Xray-linux-64-musl.zip`，但官方 XTLS/Xray-core 不发布 `-musl` 包（Linux 为 `CGO_ENABLED=0` 静态 Go 二进制，musl/glibc 通用），导致 Alpine 资产 404 安装失败；现统一使用官方标准包（如 `Xray-linux-64.zip`），并移除多余的 `alpine_uses_musl_asset` 门禁。
 - README/注释同步：去除「下载 musl 版 Xray 包」表述，改为说明静态二进制兼容 musl。

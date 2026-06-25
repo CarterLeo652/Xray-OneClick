@@ -53,22 +53,22 @@ run_reality_command() {
                 case "$1" in
                     --port)
                         REALITY_PORT_REQUEST="${2:-}"
-                        shift 2
+                        shift; shift
                         ;;
                     --defender-port)
                         REALITY_DEFENDER_PORT_REQUEST="${2:-}"
-                        shift 2
+                        shift; shift
                         ;;
                     --sni)
                         REALITY_SNI_REQUEST="${2:-}"
-                        shift 2
+                        shift; shift
                         ;;
                     --flow)
                         if [[ -z "${2:-}" ]] || ! REALITY_FLOW="$(normalize_reality_flow "$2")"; then
                             err "[Reality] --flow 仅支持 none 或 vision。"
                             return 1
                         fi
-                        shift 2
+                        shift; shift
                         ;;
                     --empty-clients)
                         REALITY_EMPTY_CLIENTS="true"
@@ -145,15 +145,15 @@ run_xhttp_command() {
                 case "$1" in
                     --port)
                         XHTTP_PORT_REQUEST="${2:-}"
-                        shift 2
+                        shift; shift
                         ;;
                     --path)
                         XHTTP_PATH_REQUEST="${2:-}"
-                        shift 2
+                        shift; shift
                         ;;
                     --finalmask)
                         XHTTP_FINALMASK_REQUEST="${2:-}"
-                        shift 2
+                        shift; shift
                         ;;
                     --finalmask-preset | --fm-packets | --fm-length | --fm-delay | --fm-max-split | --finalmask-json)
                         if ! parse_finalmask_args "$1" "${2:-}"; then
@@ -163,22 +163,22 @@ run_xhttp_command() {
                         ;;
                     --auth)
                         VLESS_AUTH="${2:-}"
-                        shift 2
+                        shift; shift
                         ;;
                     --enc-method)
                         VLESS_ENC_METHOD="${2:-}"
                         VLESS_MODE="advanced"
-                        shift 2
+                        shift; shift
                         ;;
                     --rtt)
                         VLESS_CLIENT_RTT="${2:-}"
                         VLESS_MODE="advanced"
-                        shift 2
+                        shift; shift
                         ;;
                     --ticket)
                         VLESS_SERVER_TICKET="${2:-}"
                         VLESS_MODE="advanced"
-                        shift 2
+                        shift; shift
                         ;;
                     --dry-run)
                         XHTTP_DRY_RUN="true"
@@ -256,11 +256,11 @@ run_enc_finalmask_command() {
                 case "$1" in
                     --port)
                         VLESS_ENC_FM_PORT_REQUEST="${2:-}"
-                        shift 2
+                        shift; shift
                         ;;
                     --auth)
                         VLESS_AUTH="${2:-}"
-                        shift 2
+                        shift; shift
                         ;;
                     --dry-run)
                         VLESS_ENC_FM_DRY_RUN="true"
@@ -338,15 +338,15 @@ run_enc_xhttp_command() {
                 case "$1" in
                     --port)
                         ENC_XHTTP_PORT_REQUEST="${2:-}"
-                        shift 2
+                        shift; shift
                         ;;
                     --path)
                         ENC_XHTTP_PATH_REQUEST="${2:-}"
-                        shift 2
+                        shift; shift
                         ;;
                     --auth)
                         VLESS_AUTH="${2:-}"
-                        shift 2
+                        shift; shift
                         ;;
                     --dry-run)
                         ENC_XHTTP_DRY_RUN="true"
@@ -424,11 +424,11 @@ run_hysteria2_command() {
                 case "$1" in
                     --port)
                         HY2_PORT_REQUEST="${2:-}"
-                        shift 2
+                        shift; shift
                         ;;
                     --sni)
                         HY2_SNI_REQUEST="${2:-}"
-                        shift 2
+                        shift; shift
                         ;;
                     --dry-run)
                         HY2_DRY_RUN="true"
@@ -537,22 +537,22 @@ run_advanced_profile_command() {
                 case "$1" in
                     --port)
                         ADVANCED_PORT_REQUEST="${2:-}"
-                        shift 2
+                        shift; shift
                         ;;
                     --path)
                         ADVANCED_PATH_REQUEST="${2:-}"
-                        shift 2
+                        shift; shift
                         ;;
                     --sni)
                         ADVANCED_SNI_REQUEST="${2:-}"
-                        shift 2
+                        shift; shift
                         ;;
                     --flow)
                         if [[ -z "${2:-}" ]] || ! ADVANCED_FLOW="$(normalize_reality_flow "$2")"; then
                             err "[高级组合] --flow 仅支持 none 或 vision。"
                             return 1
                         fi
-                        shift 2
+                        shift; shift
                         ;;
                     --fallback-limit)
                         ADVANCED_FALLBACK_LIMIT_REQUEST="${2:-}"
@@ -563,12 +563,12 @@ run_advanced_profile_command() {
                                 return 1
                                 ;;
                         esac
-                        shift 2
+                        shift; shift
                         ;;
                     --finalmask)
                         ADVANCED_FINALMASK_REQUEST="${2:-}"
                         ADVANCED_FINALMASK_SPECIFIED="true"
-                        shift 2
+                        shift; shift
                         ;;
                     --finalmask-preset | --fm-packets | --fm-length | --fm-delay | --fm-max-split | --finalmask-json)
                         if ! parse_finalmask_args "$1" "${2:-}"; then
@@ -580,25 +580,25 @@ run_advanced_profile_command() {
                     --auth)
                         VLESS_AUTH="${2:-}"
                         ADVANCED_AUTH_SPECIFIED="true"
-                        shift 2
+                        shift; shift
                         ;;
                     --enc-method)
                         VLESS_ENC_METHOD="${2:-}"
                         VLESS_MODE="advanced"
                         ADVANCED_AUTH_SPECIFIED="true"
-                        shift 2
+                        shift; shift
                         ;;
                     --rtt)
                         VLESS_CLIENT_RTT="${2:-}"
                         VLESS_MODE="advanced"
                         ADVANCED_AUTH_SPECIFIED="true"
-                        shift 2
+                        shift; shift
                         ;;
                     --ticket)
                         VLESS_SERVER_TICKET="${2:-}"
                         VLESS_MODE="advanced"
                         ADVANCED_AUTH_SPECIFIED="true"
-                        shift 2
+                        shift; shift
                         ;;
                     --yes | -y)
                         ADVANCED_ASSUME_YES="true"

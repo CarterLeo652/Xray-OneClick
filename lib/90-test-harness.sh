@@ -64,35 +64,35 @@ run_test_config_generate_command() {
                     err "[test] --output requires a file path"
                     return 1
                 }
-                shift 2
+                shift; shift
                 ;;
             --port)
                 port="${2:-}"
-                shift 2
+                shift; shift
                 ;;
             --defender-port)
                 defender_port="${2:-}"
-                shift 2
+                shift; shift
                 ;;
             --path)
                 path="${2:-}"
-                shift 2
+                shift; shift
                 ;;
             --sni)
                 sni="${2:-}"
-                shift 2
+                shift; shift
                 ;;
             --finalmask)
                 finalmask="${2:-}"
-                shift 2
+                shift; shift
                 ;;
             --finalmask-preset)
                 finalmask_preset="${2:-balanced}"
-                shift 2
+                shift; shift
                 ;;
             --fallback-limit)
                 fallback_limit="${2:-off}"
-                shift 2
+                shift; shift
                 ;;
             *)
                 err "[test] unknown test-config-generate option: $1"

@@ -6,7 +6,7 @@ state_set_socks5() {
     local tmp
 
     tmp="$(mktemp)" || return 1
-    jq --arg tag "$SOCKS_TAG" \
+    if ! jq --arg tag "$SOCKS_TAG" \
         --arg port "$S_PORT" \
         --arg listen "0.0.0.0" \
         --arg listen_scope "ipv4" '
@@ -16,8 +16,16 @@ state_set_socks5() {
           "listen": $listen,
           "listen_scope": $listen_scope
         }
-       ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
-    rm -f "$tmp"
+       ' "$STATE_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        err "[失败] [SOCKS5] 写入状态文件失败。"
+        return 1
+    fi
+    if ! mv "$tmp" "$STATE_FILE"; then
+        rm -f "$tmp"
+        err "[失败] [SOCKS5] 更新状态文件失败。"
+        return 1
+    fi
     ensure_config_security
 }
 
@@ -30,11 +38,17 @@ install_socks5() {
     S_PASS="${S_PASS:-$(openssl rand -hex 8)}"
 
     install_or_update_xray || return 1
-    backup_config
+    backup_config || {
+        err "[失败] [SOCKS5] 配置备份失败。"
+        return 1
+    }
 
     local tmp
-    tmp="$(mktemp)"
-    jq --arg tag "$SOCKS_TAG" \
+    tmp="$(mktemp)" || {
+        err "[失败] [SOCKS5] 创建临时文件失败。"
+        return 1
+    }
+    if ! jq --arg tag "$SOCKS_TAG" \
         --arg port "$S_PORT" \
         --arg user "$S_USER" \
         --arg pass "$S_PASS" '
@@ -50,8 +64,16 @@ install_socks5() {
             "udp": true
           }
         }]
-       ' "$CONFIG_FILE" >"$tmp" && mv "$tmp" "$CONFIG_FILE"
-    rm -f "$tmp"
+       ' "$CONFIG_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        err "[失败] [SOCKS5] 生成配置失败。"
+        return 1
+    fi
+    if ! mv "$tmp" "$CONFIG_FILE"; then
+        rm -f "$tmp"
+        err "[失败] [SOCKS5] 写入 $CONFIG_FILE 失败。"
+        return 1
+    fi
 
     apply_config || return 1
     state_set_socks5 || err "[状态] SOCKS5 状态写入失败，但 config.json 已生效。"
