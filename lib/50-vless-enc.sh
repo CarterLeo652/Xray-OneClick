@@ -61,7 +61,7 @@ configure_vless_advanced_options() {
 }
 
 configure_vless_encryption() {
-    install_or_update_xray || return 1
+    ensure_xray_vlessenc || return 1
 
     VLESS_MODE="basic"
     VLESS_ENC_METHOD="native"
@@ -172,6 +172,10 @@ build_finalmask_sudoku_json() {
 
 configure_vless_enc_finalmask() {
     local mode="${1:-interactive}"
+
+    if [[ "$mode" != "dry-run" ]]; then
+        ensure_xray_vlessenc || return 1
+    fi
 
     VLESS_MODE="basic"
     VLESS_ENC_METHOD="native"

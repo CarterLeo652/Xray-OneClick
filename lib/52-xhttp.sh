@@ -17,18 +17,6 @@ validate_xhttp_path() {
     [[ ${#path} -ge 2 && ${#path} -le 128 ]] || return 1
 }
 
-finalmask_template_name_to_label() {
-    case "${1:-balanced}" in
-        conservative) printf '%s' "保守 conservative" ;;
-        balanced | default) printf '%s' "均衡 balanced" ;;
-        aggressive) printf '%s' "激进 aggressive" ;;
-        custom) printf '%s' "自定义 custom" ;;
-        raw-json) printf '%s' "原始 JSON raw-json" ;;
-        none | off) printf '%s' "未启用" ;;
-        *) printf '%s' "$1" ;;
-    esac
-}
-
 build_finalmask_preset_json() {
     local preset="${1:-balanced}"
     local length delay max_split
@@ -58,10 +46,6 @@ build_finalmask_preset_json() {
             ;;
     esac
     build_finalmask_custom_json "tlshello" "$length" "$delay" "$max_split"
-}
-
-default_finalmask_json() {
-    build_finalmask_preset_json "balanced"
 }
 
 validate_finalmask_packets() {
@@ -392,7 +376,7 @@ configure_vless_xhttp_finalmask() {
     local input port
 
     if [[ "$mode" != "dry-run" ]]; then
-        install_or_update_xray || return 1
+        ensure_xray_vlessenc || return 1
     fi
 
     VLESS_MODE="${VLESS_MODE:-basic}"
@@ -831,6 +815,10 @@ remove_vless_xhttp_finalmask_config() {
 configure_vless_enc_xhttp() {
     local mode="${1:-interactive}"
     local input port
+
+    if [[ "$mode" != "dry-run" ]]; then
+        ensure_xray_vlessenc || return 1
+    fi
 
     VLESS_MODE="${VLESS_MODE:-basic}"
     VLESS_ENC_METHOD="${VLESS_ENC_METHOD:-native}"

@@ -105,16 +105,6 @@ build_advanced_fallback_limit_json() {
     }'
 }
 
-remove_inbound_by_tag() {
-    local tag="$1"
-    local tmp
-
-    init_config || return 1
-    tmp="$(mktemp)" || return 1
-    jq --arg tag "$tag" '.inbounds = ((.inbounds // []) | map(select(.tag != $tag)))' "$CONFIG_FILE" >"$tmp" && mv "$tmp" "$CONFIG_FILE"
-    rm -f "$tmp"
-}
-
 remove_state_key() {
     state_delete_key "$1"
 }
@@ -226,38 +216,6 @@ ask_or_random_advanced_port() {
         printf -v "$__resultvar" '%s' "$input"
         return 0
     done
-}
-
-build_vless_client_json() {
-    local uuid="$1"
-    local email="${2:-advanced@xray}"
-
-    jq -cn --arg uuid "$uuid" --arg email "$email" '[{"id": $uuid, "email": $email}]'
-}
-
-build_xhttp_settings_json() {
-    local path="$1"
-
-    MSYS2_ENV_CONV_EXCL="*" ADVANCED_XHTTP_PATH="$path" jq -cn '{path: env.ADVANCED_XHTTP_PATH}'
-}
-
-build_reality_settings_json() {
-    local sni="$1"
-    local private_key="$2"
-    local short_ids_json="$3"
-    local spider_x="${4:-/}"
-
-    MSYS2_ENV_CONV_EXCL="*" ADVANCED_SPIDER_X="$spider_x" jq -cn --arg sni "$sni" \
-        --arg private_key "$private_key" \
-        --argjson short_ids "$short_ids_json" '{
-        target: ($sni + ":443"),
-        show: false,
-        xver: 0,
-        spiderX: env.ADVANCED_SPIDER_X,
-        shortIds: $short_ids,
-        privateKey: $private_key,
-        serverNames: [$sni]
-      }'
 }
 
 print_advanced_compat_hint() {
@@ -381,6 +339,7 @@ configure_advanced_profile() {
     generate_reality_short_ids || return 1
 
     if advanced_profile_has_encryption "$kind"; then
+        [[ "$mode" != "dry-run" ]] && { ensure_xray_vlessenc || return 1; }
         VLESS_MODE="${VLESS_MODE:-basic}"
         VLESS_ENC_METHOD="${VLESS_ENC_METHOD:-native}"
         VLESS_CLIENT_RTT="${VLESS_CLIENT_RTT:-0rtt}"

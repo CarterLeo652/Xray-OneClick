@@ -158,6 +158,195 @@ set_link_view_mode() {
     ok "[完成] 当前链接显示模式: ${LINK_VIEW_MODE}"
 }
 
+_reset_inbound_present() {
+    jq -e --arg tag "$1" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1
+}
+
+_reset_any_vlessenc_present() {
+    local tag
+    for tag in "$VLESS_TAG" "$VLESS_ENC_FM_TAG" "$VLESS_ENC_XHTTP_TAG" \
+        "$VLESS_XHTTP_FM_TAG" "$VLESS_ENC_REALITY_TAG" "$VLESS_FULLSTACK_TAG"; do
+        _reset_inbound_present "$tag" && return 0
+    done
+    return 1
+}
+
+# Rotate UUID + Encryption for VLESS Encryption + FinalMask (sudoku/TCP).
+# Returns 0 when rotated, 2 when not installed, 1 on error.
+reset_vless_enc_finalmask_secret() {
+    _reset_inbound_present "$VLESS_ENC_FM_TAG" || {
+        info "[跳过] 未找到 VLESS Encryption + FinalMask 入站。"
+        return 2
+    }
+    local listen tmp
+    VLESS_AUTH="$(jq -r ".${VLESS_ENC_FM_STATE_KEY}.auth // \"x25519\"" "$STATE_FILE" 2>/dev/null)"
+    VLESS_ENC_METHOD="$(jq -r ".${VLESS_ENC_FM_STATE_KEY}.enc_method // \"native\"" "$STATE_FILE" 2>/dev/null)"
+    VLESS_CLIENT_RTT="$(jq -r ".${VLESS_ENC_FM_STATE_KEY}.client_rtt // \"0rtt\"" "$STATE_FILE" 2>/dev/null)"
+    VLESS_SERVER_TICKET="$(jq -r ".${VLESS_ENC_FM_STATE_KEY}.server_ticket // \"600s\"" "$STATE_FILE" 2>/dev/null)"
+    VLESS_ENC_FM_PORT="$(jq -r --arg tag "$VLESS_ENC_FM_TAG" '.inbounds[] | select(.tag == $tag).port' "$CONFIG_FILE" 2>/dev/null)"
+    VLESS_ENC_FM_JSON="$(jq -c ".${VLESS_ENC_FM_STATE_KEY}.finalmask_json // null" "$STATE_FILE" 2>/dev/null)"
+    listen="$(jq -r --arg tag "$VLESS_ENC_FM_TAG" '.inbounds[] | select(.tag == $tag).listen // "0.0.0.0"' "$CONFIG_FILE" 2>/dev/null)"
+    VLESS_ENC_FM_LISTEN="${listen:-0.0.0.0}"
+    VLESS_UUID="$(generate_uuid)" || return 1
+    generate_vless_encryption_pair "$VLESS_AUTH" || return 1
+    tmp="$(mktemp)" || return 1
+    jq --arg tag "$VLESS_ENC_FM_TAG" --arg uuid "$VLESS_UUID" --arg decryption "$VLESS_DECRYPTION" '
+        (.inbounds[] | select(.tag == $tag).settings.clients[0].id) = $uuid |
+        (.inbounds[] | select(.tag == $tag).settings.decryption) = $decryption
+       ' "$CONFIG_FILE" >"$tmp" && mv "$tmp" "$CONFIG_FILE"
+    rm -f "$tmp"
+    state_set_vless_enc_finalmask
+    ok "[完成] VLESS Encryption + FinalMask 的 UUID 与 Encryption 已重置。"
+    return 0
+}
+
+# Rotate UUID + Encryption for VLESS Encryption + XHTTP.
+reset_vless_enc_xhttp_secret() {
+    _reset_inbound_present "$VLESS_ENC_XHTTP_TAG" || {
+        info "[跳过] 未找到 VLESS Encryption + XHTTP 入站。"
+        return 2
+    }
+    local listen tmp
+    VLESS_AUTH="$(jq -r ".${VLESS_ENC_XHTTP_STATE_KEY}.auth // \"x25519\"" "$STATE_FILE" 2>/dev/null)"
+    VLESS_ENC_METHOD="$(jq -r ".${VLESS_ENC_XHTTP_STATE_KEY}.enc_method // \"native\"" "$STATE_FILE" 2>/dev/null)"
+    VLESS_CLIENT_RTT="$(jq -r ".${VLESS_ENC_XHTTP_STATE_KEY}.client_rtt // \"0rtt\"" "$STATE_FILE" 2>/dev/null)"
+    VLESS_SERVER_TICKET="$(jq -r ".${VLESS_ENC_XHTTP_STATE_KEY}.server_ticket // \"600s\"" "$STATE_FILE" 2>/dev/null)"
+    ENC_XHTTP_PORT="$(jq -r --arg tag "$VLESS_ENC_XHTTP_TAG" '.inbounds[] | select(.tag == $tag).port' "$CONFIG_FILE" 2>/dev/null)"
+    ENC_XHTTP_PATH="$(jq -r ".${VLESS_ENC_XHTTP_STATE_KEY}.path // empty" "$STATE_FILE" 2>/dev/null)"
+    listen="$(jq -r --arg tag "$VLESS_ENC_XHTTP_TAG" '.inbounds[] | select(.tag == $tag).listen // "0.0.0.0"' "$CONFIG_FILE" 2>/dev/null)"
+    ENC_XHTTP_LISTEN="${listen:-0.0.0.0}"
+    VLESS_UUID="$(generate_uuid)" || return 1
+    generate_vless_encryption_pair "$VLESS_AUTH" || return 1
+    tmp="$(mktemp)" || return 1
+    jq --arg tag "$VLESS_ENC_XHTTP_TAG" --arg uuid "$VLESS_UUID" --arg decryption "$VLESS_DECRYPTION" '
+        (.inbounds[] | select(.tag == $tag).settings.clients[0].id) = $uuid |
+        (.inbounds[] | select(.tag == $tag).settings.decryption) = $decryption
+       ' "$CONFIG_FILE" >"$tmp" && mv "$tmp" "$CONFIG_FILE"
+    rm -f "$tmp"
+    state_set_vless_enc_xhttp
+    ok "[完成] VLESS Encryption + XHTTP 的 UUID 与 Encryption 已重置。"
+    return 0
+}
+
+# Rotate UUID + Encryption for VLESS Encryption + XHTTP + FinalMask.
+reset_vless_xhttp_finalmask_secret() {
+    _reset_inbound_present "$VLESS_XHTTP_FM_TAG" || {
+        info "[跳过] 未找到 VLESS Encryption + XHTTP + FinalMask 入站。"
+        return 2
+    }
+    local tmp
+    VLESS_AUTH="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.auth // \"x25519\"" "$STATE_FILE" 2>/dev/null)"
+    VLESS_ENC_METHOD="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.enc_method // \"native\"" "$STATE_FILE" 2>/dev/null)"
+    VLESS_CLIENT_RTT="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.client_rtt // \"0rtt\"" "$STATE_FILE" 2>/dev/null)"
+    VLESS_SERVER_TICKET="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.server_ticket // \"600s\"" "$STATE_FILE" 2>/dev/null)"
+    XHTTP_PORT="$(jq -r --arg tag "$VLESS_XHTTP_FM_TAG" '.inbounds[] | select(.tag == $tag).port' "$CONFIG_FILE" 2>/dev/null)"
+    XHTTP_PATH="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.path // empty" "$STATE_FILE" 2>/dev/null)"
+    XHTTP_FINALMASK_ENABLED="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
+    XHTTP_FINALMASK_JSON="$(jq -c ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_json // null" "$STATE_FILE" 2>/dev/null)"
+    XHTTP_FINALMASK_MODE="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_mode // \"off\"" "$STATE_FILE" 2>/dev/null)"
+    XHTTP_FINALMASK_PRESET="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_preset // \"none\"" "$STATE_FILE" 2>/dev/null)"
+    XHTTP_FINALMASK_SUMMARY="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_summary // \"off\"" "$STATE_FILE" 2>/dev/null)"
+    VLESS_UUID="$(generate_uuid)" || return 1
+    generate_vless_encryption_pair "$VLESS_AUTH" || return 1
+    tmp="$(mktemp)" || return 1
+    jq --arg tag "$VLESS_XHTTP_FM_TAG" --arg uuid "$VLESS_UUID" --arg decryption "$VLESS_DECRYPTION" '
+        (.inbounds[] | select(.tag == $tag).settings.clients[0].id) = $uuid |
+        (.inbounds[] | select(.tag == $tag).settings.decryption) = $decryption
+       ' "$CONFIG_FILE" >"$tmp" && mv "$tmp" "$CONFIG_FILE"
+    rm -f "$tmp"
+    state_set_vless_xhttp_finalmask
+    ok "[完成] VLESS Encryption + XHTTP + FinalMask 的 UUID 与 Encryption 已重置。"
+    return 0
+}
+
+# Rotate UUID + REALITY keypair for standalone VLESS TCP REALITY (short IDs preserved).
+reset_reality_secret() {
+    _reset_inbound_present "$REALITY_TAG" || {
+        info "[跳过] 未找到 VLESS TCP REALITY 入站。"
+        return 2
+    }
+    local tmp
+    REALITY_PORT="$(jq -r ".${REALITY_STATE_KEY}.port // empty" "$STATE_FILE" 2>/dev/null)"
+    REALITY_DEFENDER_PORT="$(jq -r ".${REALITY_STATE_KEY}.defender_port // empty" "$STATE_FILE" 2>/dev/null)"
+    REALITY_SERVER_NAME="$(jq -r ".${REALITY_STATE_KEY}.server_name // empty" "$STATE_FILE" 2>/dev/null)"
+    REALITY_SPIDER_X="$(jq -r ".${REALITY_STATE_KEY}.spider_x // \"/\"" "$STATE_FILE" 2>/dev/null)"
+    REALITY_FLOW="$(jq -r ".${REALITY_STATE_KEY}.flow // \"$REALITY_FLOW_DEFAULT\"" "$STATE_FILE" 2>/dev/null)"
+    REALITY_DEFAULT_SHORT_ID="$(jq -r ".${REALITY_STATE_KEY}.default_short_id // empty" "$STATE_FILE" 2>/dev/null)"
+    REALITY_SHORT_IDS_JSON="$(jq -c ".${REALITY_STATE_KEY}.short_ids // []" "$STATE_FILE" 2>/dev/null)"
+    REALITY_EMPTY_CLIENTS="$(jq -r ".${REALITY_STATE_KEY}.empty_clients // false" "$STATE_FILE" 2>/dev/null)"
+    REALITY_UUID="$(generate_uuid)" || return 1
+    generate_reality_keys || return 1
+    tmp="$(mktemp)" || return 1
+    jq --arg tag "$REALITY_TAG" --arg uuid "$REALITY_UUID" --arg pk "$REALITY_PRIVATE_KEY" '
+        (.inbounds[] | select(.tag == $tag).streamSettings.realitySettings.privateKey) = $pk |
+        (.inbounds[] | select(.tag == $tag) | select((.settings.clients | length) > 0).settings.clients[0].id) = $uuid
+       ' "$CONFIG_FILE" >"$tmp" && mv "$tmp" "$CONFIG_FILE"
+    rm -f "$tmp"
+    state_set_reality
+    ok "[完成] VLESS TCP REALITY 的 UUID 与 REALITY 密钥对已重置。"
+    return 0
+}
+
+# Rotate secrets for an advanced combo profile (xhttp-reality / enc-reality / fullstack).
+# REALITY keypair + UUID always rotated; VLESS Encryption rotated when the profile uses it.
+# Short IDs, path, SNI, flow and FinalMask settings are preserved.
+reset_advanced_secret() {
+    local kind="$1"
+    local tag state_key tmp has_enc
+    tag="$(advanced_profile_tag "$kind")" || return 1
+    state_key="$(advanced_profile_state_key "$kind")" || return 1
+    _reset_inbound_present "$tag" || {
+        info "[跳过] 未找到 $(advanced_profile_name "$kind") 入站。"
+        return 2
+    }
+
+    ADVANCED_PORT="$(jq -r --arg tag "$tag" '.inbounds[] | select(.tag == $tag).port' "$CONFIG_FILE" 2>/dev/null)"
+    ADVANCED_PATH="$(jq -r ".${state_key}.path // empty" "$STATE_FILE" 2>/dev/null)"
+    ADVANCED_SERVER_NAME="$(jq -r ".${state_key}.server_name // empty" "$STATE_FILE" 2>/dev/null)"
+    ADVANCED_SPIDER_X="$(jq -r ".${state_key}.spider_x // \"/\"" "$STATE_FILE" 2>/dev/null)"
+    ADVANCED_FLOW="$(jq -r ".${state_key}.flow // \"$REALITY_FLOW_NONE\"" "$STATE_FILE" 2>/dev/null)"
+    REALITY_DEFAULT_SHORT_ID="$(jq -r ".${state_key}.default_short_id // empty" "$STATE_FILE" 2>/dev/null)"
+    REALITY_SHORT_IDS_JSON="$(jq -c ".${state_key}.short_ids // []" "$STATE_FILE" 2>/dev/null)"
+    ADVANCED_FALLBACK_LIMIT_MODE="$(jq -r ".${state_key}.fallback_limit_mode // \"off\"" "$STATE_FILE" 2>/dev/null)"
+    ADVANCED_FALLBACK_LIMIT_UPLOAD_JSON="$(jq -c ".${state_key}.fallback_limit_upload // null" "$STATE_FILE" 2>/dev/null)"
+    ADVANCED_FALLBACK_LIMIT_DOWNLOAD_JSON="$(jq -c ".${state_key}.fallback_limit_download // null" "$STATE_FILE" 2>/dev/null)"
+    ADVANCED_FINALMASK_ENABLED="$(jq -r ".${state_key}.finalmask_enabled // false" "$STATE_FILE" 2>/dev/null)"
+    ADVANCED_FINALMASK_JSON="$(jq -c ".${state_key}.finalmask_json // null" "$STATE_FILE" 2>/dev/null)"
+    ADVANCED_FINALMASK_MODE="$(jq -r ".${state_key}.finalmask_mode // \"off\"" "$STATE_FILE" 2>/dev/null)"
+    ADVANCED_FINALMASK_PRESET="$(jq -r ".${state_key}.finalmask_preset // \"none\"" "$STATE_FILE" 2>/dev/null)"
+    ADVANCED_FINALMASK_SUMMARY="$(jq -r ".${state_key}.finalmask_summary // \"off\"" "$STATE_FILE" 2>/dev/null)"
+
+    ADVANCED_UUID="$(generate_uuid)" || return 1
+    generate_reality_keys || return 1
+
+    has_enc="false"
+    if advanced_profile_has_encryption "$kind"; then
+        has_enc="true"
+        VLESS_AUTH="$(jq -r ".${state_key}.auth // \"x25519\"" "$STATE_FILE" 2>/dev/null)"
+        VLESS_ENC_METHOD="$(jq -r ".${state_key}.enc_method // \"native\"" "$STATE_FILE" 2>/dev/null)"
+        VLESS_CLIENT_RTT="$(jq -r ".${state_key}.client_rtt // \"0rtt\"" "$STATE_FILE" 2>/dev/null)"
+        VLESS_SERVER_TICKET="$(jq -r ".${state_key}.server_ticket // \"600s\"" "$STATE_FILE" 2>/dev/null)"
+        generate_vless_encryption_pair "$VLESS_AUTH" || return 1
+    else
+        VLESS_DECRYPTION=""
+        VLESS_ENCRYPTION=""
+    fi
+
+    tmp="$(mktemp)" || return 1
+    jq --arg tag "$tag" --arg uuid "$ADVANCED_UUID" --arg pk "$REALITY_PRIVATE_KEY" \
+        --arg has_enc "$has_enc" --arg decryption "${VLESS_DECRYPTION:-}" '
+        (.inbounds[] | select(.tag == $tag).streamSettings.realitySettings.privateKey) = $pk |
+        (.inbounds[] | select(.tag == $tag) | select((.settings.clients | length) > 0).settings.clients[0].id) = $uuid |
+        if $has_enc == "true" then
+          (.inbounds[] | select(.tag == $tag).settings.decryption) = $decryption
+        else . end
+       ' "$CONFIG_FILE" >"$tmp" && mv "$tmp" "$CONFIG_FILE"
+    rm -f "$tmp"
+    state_set_advanced_profile "$kind"
+    ok "[完成] $(advanced_profile_name "$kind") 的 UUID 与密钥已重置。"
+    return 0
+}
+
 reset_secrets() {
     install_or_update_xray || return 1
     [[ -f "$CONFIG_FILE" ]] || {
@@ -167,7 +356,7 @@ reset_secrets() {
 
     echo -e "\n${YELLOW}[维护] 重置密钥/密码（端口不变）${PLAIN}"
     echo " 1) 重置 SS2022 密码"
-    echo " 2) 重置 VLESS UUID + Encryption"
+    echo " 2) 重置全部 VLESS / REALITY 系列 UUID 与密钥"
     echo " 3) 重置 SOCKS5 密码"
     echo " 4) 一键重置全部"
     read -r -p "选项: " R_OPT
@@ -191,6 +380,9 @@ reset_secrets() {
     fi
 
     if [[ "$R_OPT" == "2" || "$R_OPT" == "4" ]]; then
+        if _reset_any_vlessenc_present; then
+            ensure_xray_vlessenc || return 1
+        fi
         if jq -e --arg tag "$VLESS_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1; then
             current_port="$(jq -r --arg tag "$VLESS_TAG" '.inbounds[] | select(.tag == $tag).port' "$CONFIG_FILE")"
             current_auth="$(jq -r '.vless_encryption.auth // "x25519"' "$STATE_FILE" 2>/dev/null)"
@@ -200,7 +392,7 @@ reset_secrets() {
             VLESS_ENC_METHOD="$(jq -r '.vless_encryption.enc_method // "native"' "$STATE_FILE" 2>/dev/null)"
             VLESS_CLIENT_RTT="$(jq -r '.vless_encryption.client_rtt // "0rtt"' "$STATE_FILE" 2>/dev/null)"
             VLESS_SERVER_TICKET="$(jq -r '.vless_encryption.server_ticket // "600s"' "$STATE_FILE" 2>/dev/null)"
-            VLESS_UUID="$("$BIN_PATH" uuid 2>/dev/null | tr -d '\r\n')"
+            VLESS_UUID="$(generate_uuid)" || return 1
             generate_vless_encryption_pair "$VLESS_AUTH" || return 1
             tmp="$(mktemp)"
             jq --arg tag "$VLESS_TAG" \
@@ -212,11 +404,26 @@ reset_secrets() {
                ' "$CONFIG_FILE" >"$tmp" && mv "$tmp" "$CONFIG_FILE"
             rm -f "$tmp"
             state_set_vless
-            ok "[完成] VLESS UUID 与 Encryption 已重置。"
+            ok "[完成] VLESS Encryption 的 UUID 与 Encryption 已重置。"
             changed="true"
         else
             info "[跳过] 未找到 VLESS Encryption 入站。"
         fi
+
+        local rc resetter
+        for resetter in \
+            "reset_vless_enc_finalmask_secret" \
+            "reset_vless_enc_xhttp_secret" \
+            "reset_vless_xhttp_finalmask_secret" \
+            "reset_reality_secret" \
+            "reset_advanced_secret xhttp-reality" \
+            "reset_advanced_secret enc-reality" \
+            "reset_advanced_secret fullstack"; do
+            $resetter
+            rc=$?
+            [[ $rc -eq 1 ]] && return 1
+            [[ $rc -eq 0 ]] && changed="true"
+        done
     fi
 
     if [[ "$R_OPT" == "3" || "$R_OPT" == "4" ]]; then

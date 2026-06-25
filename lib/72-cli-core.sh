@@ -103,6 +103,7 @@ migrate_old_state() {
     local old_xhttp_finalmask_json
     local ss_scope="" vless_scope="" reality_scope="" xhttp_scope="" socks_scope=""
     local xhttp_reality_scope="" enc_reality_scope="" fullstack_scope=""
+    local enc_fm_scope="" enc_xhttp_scope=""
     local xhttp_fm_mode="" xhttp_fm_preset="" xhttp_fm_summary=""
     local fullstack_fm_mode="" fullstack_fm_preset="" fullstack_fm_summary=""
     local fullstack_enabled fullstack_json
@@ -196,6 +197,14 @@ migrate_old_state() {
         if jq -e ".${VLESS_XHTTP_FM_STATE_KEY}? and ((.${VLESS_XHTTP_FM_STATE_KEY}.listen_scope // \"\") == \"\")" "$STATE_FILE" >/dev/null 2>&1; then
             xhttp_scope="$(config_inbound_listen_scope "$VLESS_XHTTP_FM_TAG")"
             [[ "$xhttp_scope" == "unknown" ]] && diag_warn "无法从 config 推导 vless_xhttp_finalmask.listen_scope" || changed="true"
+        fi
+        if jq -e ".${VLESS_ENC_FM_STATE_KEY}? and ((.${VLESS_ENC_FM_STATE_KEY}.listen_scope // \"\") == \"\")" "$STATE_FILE" >/dev/null 2>&1; then
+            enc_fm_scope="$(config_inbound_listen_scope "$VLESS_ENC_FM_TAG")"
+            [[ "$enc_fm_scope" == "unknown" ]] && diag_warn "无法从 config 推导 vless_enc_finalmask.listen_scope" || changed="true"
+        fi
+        if jq -e ".${VLESS_ENC_XHTTP_STATE_KEY}? and ((.${VLESS_ENC_XHTTP_STATE_KEY}.listen_scope // \"\") == \"\")" "$STATE_FILE" >/dev/null 2>&1; then
+            enc_xhttp_scope="$(config_inbound_listen_scope "$VLESS_ENC_XHTTP_TAG")"
+            [[ "$enc_xhttp_scope" == "unknown" ]] && diag_warn "无法从 config 推导 vless_enc_xhttp.listen_scope" || changed="true"
         fi
         if jq -e '.socks5? and ((.socks5.listen_scope // "") == "")' "$STATE_FILE" >/dev/null 2>&1; then
             socks_scope="$(config_inbound_listen_scope "$SOCKS_TAG")"
@@ -309,6 +318,10 @@ migrate_old_state() {
         --arg xhttp_reality_scope "$xhttp_reality_scope" \
         --arg enc_reality_scope "$enc_reality_scope" \
         --arg fullstack_scope "$fullstack_scope" \
+        --arg enc_fm_scope "$enc_fm_scope" \
+        --arg enc_xhttp_scope "$enc_xhttp_scope" \
+        --arg enc_fm_key "$VLESS_ENC_FM_STATE_KEY" \
+        --arg enc_xhttp_key "$VLESS_ENC_XHTTP_STATE_KEY" \
         --arg xhttp_fm_mode "$xhttp_fm_mode" \
         --arg xhttp_fm_preset "$xhttp_fm_preset" \
         --arg xhttp_fm_summary "$xhttp_fm_summary" \
@@ -351,6 +364,8 @@ migrate_old_state() {
         fill_scope($xhttp_reality_key; $xhttp_reality_scope) |
         fill_scope($enc_reality_key; $enc_reality_scope) |
         fill_scope($fullstack_key; $fullstack_scope) |
+        fill_scope($enc_fm_key; $enc_fm_scope) |
+        fill_scope($enc_xhttp_key; $enc_xhttp_scope) |
         fill_flow($xhttp_reality_key; $xhttp_reality_flow) |
         fill_flow($enc_reality_key; $enc_reality_flow) |
         fill_flow($fullstack_key; $fullstack_flow) |
