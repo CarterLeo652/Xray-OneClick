@@ -4,11 +4,11 @@ Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在
 
 脚本支持 Shadowsocks 2022、VLESS Encryption、VLESS TCP REALITY、VLESS Encryption + XHTTP + FinalMask、VLESS Encryption + XHTTP、VLESS Encryption + FinalMask（sudoku）、SOCKS5、Hysteria2，以及高级协议组合与 Tunnel 中转管理。默认带基础安全屏蔽、配置备份、服务诊断、配置导出、Xray-core 升级和安全卸载能力，并提供 stable / prerelease 两条 Xray-core 通道。
 
-当前版本：**1.1.17**（与 `VERSION` / `ike version` 一致）
+当前版本：**1.1.18**（与 `VERSION` / `ike version` 一致）
 
 状态：正式版
 
-说明：1.1.7 在默认中国大陆直连屏蔽关闭的基础上，补齐了 Xray release 通道、REALITY `target` 迁移、高级组合 fallback 提示和更保守的 FinalMask 默认策略。普通 VLESS TCP REALITY 默认使用 `xtls-rprx-vision`；高级 Reality 组合默认不启用 Vision flow，可按需用 `--flow vision` 试验开启。
+说明：1.1.18 修复了 VLESS Encryption（含 +FinalMask / +XHTTP / 高级组合）在生成密钥前未安装或 Xray 过旧导致 `xray vlessenc` 失败的问题，新增 `ensure_xray_vlessenc` 自愈逻辑（必要时自动强制升级并复验）；将「重置密钥/密码」覆盖范围扩展到全部 VLESS 与 REALITY 系列协议（REALITY 会轮换密钥对，老客户端需重新导入链接）；补全旧配置迁移的 `listen_scope` 回填；并新增 `.gitattributes` 强制 LF 行尾。普通 VLESS TCP REALITY 默认使用 `xtls-rprx-vision`；高级 Reality 组合默认不启用 Vision flow，可按需用 `--flow vision` 试验开启。
 
 ## 功能特性
 
@@ -150,7 +150,7 @@ XRAY_VERSION=v26.3.27 XRAY_CHANNEL=prerelease ike xray upgrade
 13. 安装 Hysteria2
 14. 查看当前配置链接
 15. 设置链接显示模式 (IPv4/IPv6/双栈)
-16. 重置密钥/密码（端口不变）
+16. 重置密钥/密码（端口不变，覆盖全部 VLESS / REALITY 系列）
 17. 卸载/清理
 18. 开启/关闭中国大陆直连屏蔽
 19. 开启/关闭增强安全屏蔽
