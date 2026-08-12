@@ -15,12 +15,8 @@ view_config() {
         return 1
     fi
 
-    init_state
-    if [[ "$detail" == "doctor" ]]; then
-        get_public_addresses
-    else
-        get_local_addresses
-    fi
+    init_state || return 1
+    get_public_addresses
     host_candidates "$mode"
     CURRENT_LINK_VIEW_MODE="$mode"
 
@@ -51,7 +47,7 @@ view_config() {
         [[ -n "$PUBLIC_IPV4" ]] && echo -e "公网 IPv4: ${PUBLIC_IPV4}"
         [[ -n "$PUBLIC_IPV6" ]] && echo -e "公网 IPv6: ${PUBLIC_IPV6}"
     elif [[ -z "$IPV4_HOST" && -z "$IPV6_HOST" ]]; then
-        info "[提示] 快速模式未检测到本机地址，可使用 ike view doctor 探测公网 IP。"
+        info "[提示] 未检测到公网地址，请使用 ike endpoint set 手动设置连接入口。"
     fi
 
     local ss_in ssp ssw ssm user_info
@@ -189,13 +185,19 @@ reset_vless_enc_finalmask_secret() {
     VLESS_ENC_FM_LISTEN="${listen:-0.0.0.0}"
     VLESS_UUID="$(generate_uuid)" || return 1
     generate_vless_encryption_pair "$VLESS_AUTH" || return 1
-    tmp="$(mktemp)" || return 1
-    jq --arg tag "$VLESS_ENC_FM_TAG" --arg uuid "$VLESS_UUID" --arg decryption "$VLESS_DECRYPTION" '
+    tmp="$(config_temp_file)" || return 1
+    if ! jq --arg tag "$VLESS_ENC_FM_TAG" --arg uuid "$VLESS_UUID" --arg decryption "$VLESS_DECRYPTION" '
         (.inbounds[] | select(.tag == $tag).settings.clients[0].id) = $uuid |
         (.inbounds[] | select(.tag == $tag).settings.decryption) = $decryption
-       ' "$CONFIG_FILE" >"$tmp" && mv "$tmp" "$CONFIG_FILE"
-    rm -f "$tmp"
-    state_set_vless_enc_finalmask
+       ' "$CONFIG_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if ! mv "$tmp" "$CONFIG_FILE"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    state_set_vless_enc_finalmask || return 1
     ok "[完成] VLESS Encryption + FinalMask 的 UUID 与 Encryption 已重置。"
     return 0
 }
@@ -217,13 +219,19 @@ reset_vless_enc_xhttp_secret() {
     ENC_XHTTP_LISTEN="${listen:-0.0.0.0}"
     VLESS_UUID="$(generate_uuid)" || return 1
     generate_vless_encryption_pair "$VLESS_AUTH" || return 1
-    tmp="$(mktemp)" || return 1
-    jq --arg tag "$VLESS_ENC_XHTTP_TAG" --arg uuid "$VLESS_UUID" --arg decryption "$VLESS_DECRYPTION" '
+    tmp="$(config_temp_file)" || return 1
+    if ! jq --arg tag "$VLESS_ENC_XHTTP_TAG" --arg uuid "$VLESS_UUID" --arg decryption "$VLESS_DECRYPTION" '
         (.inbounds[] | select(.tag == $tag).settings.clients[0].id) = $uuid |
         (.inbounds[] | select(.tag == $tag).settings.decryption) = $decryption
-       ' "$CONFIG_FILE" >"$tmp" && mv "$tmp" "$CONFIG_FILE"
-    rm -f "$tmp"
-    state_set_vless_enc_xhttp
+       ' "$CONFIG_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if ! mv "$tmp" "$CONFIG_FILE"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    state_set_vless_enc_xhttp || return 1
     ok "[完成] VLESS Encryption + XHTTP 的 UUID 与 Encryption 已重置。"
     return 0
 }
@@ -248,13 +256,19 @@ reset_vless_xhttp_finalmask_secret() {
     XHTTP_FINALMASK_SUMMARY="$(jq -r ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_summary // \"off\"" "$STATE_FILE" 2>/dev/null)"
     VLESS_UUID="$(generate_uuid)" || return 1
     generate_vless_encryption_pair "$VLESS_AUTH" || return 1
-    tmp="$(mktemp)" || return 1
-    jq --arg tag "$VLESS_XHTTP_FM_TAG" --arg uuid "$VLESS_UUID" --arg decryption "$VLESS_DECRYPTION" '
+    tmp="$(config_temp_file)" || return 1
+    if ! jq --arg tag "$VLESS_XHTTP_FM_TAG" --arg uuid "$VLESS_UUID" --arg decryption "$VLESS_DECRYPTION" '
         (.inbounds[] | select(.tag == $tag).settings.clients[0].id) = $uuid |
         (.inbounds[] | select(.tag == $tag).settings.decryption) = $decryption
-       ' "$CONFIG_FILE" >"$tmp" && mv "$tmp" "$CONFIG_FILE"
-    rm -f "$tmp"
-    state_set_vless_xhttp_finalmask
+       ' "$CONFIG_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if ! mv "$tmp" "$CONFIG_FILE"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    state_set_vless_xhttp_finalmask || return 1
     ok "[完成] VLESS Encryption + XHTTP + FinalMask 的 UUID 与 Encryption 已重置。"
     return 0
 }
@@ -276,13 +290,19 @@ reset_reality_secret() {
     REALITY_EMPTY_CLIENTS="$(jq -r ".${REALITY_STATE_KEY}.empty_clients // false" "$STATE_FILE" 2>/dev/null)"
     REALITY_UUID="$(generate_uuid)" || return 1
     generate_reality_keys || return 1
-    tmp="$(mktemp)" || return 1
-    jq --arg tag "$REALITY_TAG" --arg uuid "$REALITY_UUID" --arg pk "$REALITY_PRIVATE_KEY" '
+    tmp="$(config_temp_file)" || return 1
+    if ! jq --arg tag "$REALITY_TAG" --arg uuid "$REALITY_UUID" --arg pk "$REALITY_PRIVATE_KEY" '
         (.inbounds[] | select(.tag == $tag).streamSettings.realitySettings.privateKey) = $pk |
         (.inbounds[] | select(.tag == $tag) | select((.settings.clients | length) > 0).settings.clients[0].id) = $uuid
-       ' "$CONFIG_FILE" >"$tmp" && mv "$tmp" "$CONFIG_FILE"
-    rm -f "$tmp"
-    state_set_reality
+       ' "$CONFIG_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if ! mv "$tmp" "$CONFIG_FILE"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    state_set_reality || return 1
     ok "[完成] VLESS TCP REALITY 的 UUID 与 REALITY 密钥对已重置。"
     return 0
 }
@@ -332,19 +352,58 @@ reset_advanced_secret() {
         VLESS_ENCRYPTION=""
     fi
 
-    tmp="$(mktemp)" || return 1
-    jq --arg tag "$tag" --arg uuid "$ADVANCED_UUID" --arg pk "$REALITY_PRIVATE_KEY" \
+    tmp="$(config_temp_file)" || return 1
+    if ! jq --arg tag "$tag" --arg uuid "$ADVANCED_UUID" --arg pk "$REALITY_PRIVATE_KEY" \
         --arg has_enc "$has_enc" --arg decryption "${VLESS_DECRYPTION:-}" '
         (.inbounds[] | select(.tag == $tag).streamSettings.realitySettings.privateKey) = $pk |
         (.inbounds[] | select(.tag == $tag) | select((.settings.clients | length) > 0).settings.clients[0].id) = $uuid |
         if $has_enc == "true" then
           (.inbounds[] | select(.tag == $tag).settings.decryption) = $decryption
         else . end
-       ' "$CONFIG_FILE" >"$tmp" && mv "$tmp" "$CONFIG_FILE"
-    rm -f "$tmp"
-    state_set_advanced_profile "$kind"
+       ' "$CONFIG_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if ! mv "$tmp" "$CONFIG_FILE"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    state_set_advanced_profile "$kind" || return 1
     ok "[完成] $(advanced_profile_name "$kind") 的 UUID 与密钥已重置。"
     return 0
+}
+
+jq_config_update() {
+    local tmp
+
+    tmp="$(mktemp "${CONFIG_FILE}.next.XXXXXX")" || return 1
+    if ! jq "$@" "$CONFIG_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if ! mv "$tmp" "$CONFIG_FILE"; then
+        rm -f "$tmp"
+        return 1
+    fi
+}
+
+discard_secret_reset_working_copy() {
+    local real_config="$1" real_state="$2" working_config="$3" working_state="$4"
+    local config_snapshot="$5" state_snapshot="$6"
+
+    CONFIG_FILE="$real_config"
+    STATE_FILE="$real_state"
+    rm -f "$working_config" "$working_state" "$config_snapshot" "$state_snapshot"
+}
+
+restore_secret_reset_snapshots() {
+    local config_snapshot="$1" state_snapshot="$2"
+    local restored="true"
+
+    cp -a "$config_snapshot" "$CONFIG_FILE" || restored="false"
+    cp -a "$state_snapshot" "$STATE_FILE" || restored="false"
+    ensure_config_security || restored="false"
+    [[ "$restored" == "true" ]]
 }
 
 reset_secrets() {
@@ -360,18 +419,63 @@ reset_secrets() {
     echo " 3) 重置 SOCKS5 密码"
     echo " 4) 一键重置全部"
     read -r -p "选项: " R_OPT
+    case "$R_OPT" in
+        1 | 2 | 3 | 4) ;;
+        *)
+            err "[错误] 未知选项: ${R_OPT:-空}"
+            return 1
+            ;;
+    esac
 
-    backup_config
-    local tmp changed current_method current_port current_auth
+    init_state || return 1
+    if [[ "$R_OPT" == "2" || "$R_OPT" == "4" ]] && _reset_any_vlessenc_present; then
+        ensure_xray_vlessenc || return 1
+    fi
+    if ! backup_config; then
+        err "[失败] 重置前配置备份失败。"
+        return 1
+    fi
+
+    local real_config real_state working_config working_state config_snapshot state_snapshot
+    local changed current_method current_port current_auth rc resetter argument
+    real_config="$CONFIG_FILE"
+    real_state="$STATE_FILE"
+    working_config="$(mktemp "${real_config}.reset-new.XXXXXX")" || return 1
+    working_state="$(mktemp "${real_state}.reset-new.XXXXXX")" || {
+        rm -f "$working_config"
+        return 1
+    }
+    config_snapshot="$(mktemp "${real_config}.reset-old.XXXXXX")" || {
+        rm -f "$working_config" "$working_state"
+        return 1
+    }
+    state_snapshot="$(mktemp "${real_state}.reset-old.XXXXXX")" || {
+        rm -f "$working_config" "$working_state" "$config_snapshot"
+        return 1
+    }
+    if ! cp -a "$real_config" "$working_config" ||
+        ! cp -a "$real_state" "$working_state" ||
+        ! cp -a "$real_config" "$config_snapshot" ||
+        ! cp -a "$real_state" "$state_snapshot"; then
+        discard_secret_reset_working_copy "$real_config" "$real_state" "$working_config" "$working_state" "$config_snapshot" "$state_snapshot"
+        err "[失败] 无法创建重置事务快照。"
+        return 1
+    fi
+
+    CONFIG_FILE="$working_config"
+    STATE_FILE="$working_state"
     changed="false"
 
     if [[ "$R_OPT" == "1" || "$R_OPT" == "4" ]]; then
         if jq -e --arg tag "$SS_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1; then
             current_method="$(jq -r --arg tag "$SS_TAG" '.inbounds[] | select(.tag == $tag).settings.method' "$CONFIG_FILE")"
             SS_PASSWORD="$(generate_ss2022_password "$current_method")"
-            tmp="$(mktemp)"
-            jq --arg tag "$SS_TAG" --arg pass "$SS_PASSWORD" '(.inbounds[] | select(.tag == $tag).settings.password) = $pass' "$CONFIG_FILE" >"$tmp" && mv "$tmp" "$CONFIG_FILE"
-            rm -f "$tmp"
+            if [[ -z "$SS_PASSWORD" ]] || ! jq_config_update --arg tag "$SS_TAG" --arg pass "$SS_PASSWORD" \
+                '(.inbounds[] | select(.tag == $tag).settings.password) = $pass'; then
+                discard_secret_reset_working_copy "$real_config" "$real_state" "$working_config" "$working_state" "$config_snapshot" "$state_snapshot"
+                err "[失败] 生成或写入 SS2022 新密码失败，未修改原配置。"
+                return 1
+            fi
             ok "[完成] SS2022 密码已重置。"
             changed="true"
         else
@@ -380,58 +484,66 @@ reset_secrets() {
     fi
 
     if [[ "$R_OPT" == "2" || "$R_OPT" == "4" ]]; then
-        if _reset_any_vlessenc_present; then
-            ensure_xray_vlessenc || return 1
-        fi
         if jq -e --arg tag "$VLESS_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1; then
             current_port="$(jq -r --arg tag "$VLESS_TAG" '.inbounds[] | select(.tag == $tag).port' "$CONFIG_FILE")"
             current_auth="$(jq -r '.vless_encryption.auth // "x25519"' "$STATE_FILE" 2>/dev/null)"
             VLESS_AUTH="$current_auth"
             VLESS_PORT="$current_port"
+            VLESS_LISTEN="$(jq -r --arg tag "$VLESS_TAG" '.inbounds[] | select(.tag == $tag).listen // "0.0.0.0"' "$CONFIG_FILE")"
             VLESS_MODE="$(jq -r '.vless_encryption.mode // "basic"' "$STATE_FILE" 2>/dev/null)"
             VLESS_ENC_METHOD="$(jq -r '.vless_encryption.enc_method // "native"' "$STATE_FILE" 2>/dev/null)"
             VLESS_CLIENT_RTT="$(jq -r '.vless_encryption.client_rtt // "0rtt"' "$STATE_FILE" 2>/dev/null)"
             VLESS_SERVER_TICKET="$(jq -r '.vless_encryption.server_ticket // "600s"' "$STATE_FILE" 2>/dev/null)"
-            VLESS_UUID="$(generate_uuid)" || return 1
-            generate_vless_encryption_pair "$VLESS_AUTH" || return 1
-            tmp="$(mktemp)"
-            jq --arg tag "$VLESS_TAG" \
-                --arg uuid "$VLESS_UUID" \
-                --arg decryption "$VLESS_DECRYPTION" '
-                (.inbounds[] | select(.tag == $tag).settings.clients[0].id) = $uuid |
-                (.inbounds[] | select(.tag == $tag).settings.decryption) = $decryption |
-                del(.inbounds[] | select(.tag == $tag).settings.clients[0].flow)
-               ' "$CONFIG_FILE" >"$tmp" && mv "$tmp" "$CONFIG_FILE"
-            rm -f "$tmp"
-            state_set_vless
+            if ! VLESS_UUID="$(generate_uuid)" || ! generate_vless_encryption_pair "$VLESS_AUTH" ||
+                ! jq_config_update --arg tag "$VLESS_TAG" --arg uuid "$VLESS_UUID" --arg decryption "$VLESS_DECRYPTION" '
+                    (.inbounds[] | select(.tag == $tag).settings.clients[0].id) = $uuid |
+                    (.inbounds[] | select(.tag == $tag).settings.decryption) = $decryption |
+                    del(.inbounds[] | select(.tag == $tag).settings.clients[0].flow)
+                   ' || ! state_set_vless; then
+                discard_secret_reset_working_copy "$real_config" "$real_state" "$working_config" "$working_state" "$config_snapshot" "$state_snapshot"
+                err "[失败] 重置 VLESS Encryption 失败，未修改原配置。"
+                return 1
+            fi
             ok "[完成] VLESS Encryption 的 UUID 与 Encryption 已重置。"
             changed="true"
         else
             info "[跳过] 未找到 VLESS Encryption 入站。"
         fi
 
-        local rc resetter
-        for resetter in \
-            "reset_vless_enc_finalmask_secret" \
-            "reset_vless_enc_xhttp_secret" \
-            "reset_vless_xhttp_finalmask_secret" \
-            "reset_reality_secret" \
-            "reset_advanced_secret xhttp-reality" \
-            "reset_advanced_secret enc-reality" \
-            "reset_advanced_secret fullstack"; do
-            $resetter
+        while IFS='|' read -r resetter argument; do
+            if [[ -n "$argument" ]]; then
+                "$resetter" "$argument"
+            else
+                "$resetter"
+            fi
             rc=$?
-            [[ $rc -eq 1 ]] && return 1
+            if [[ $rc -eq 1 ]]; then
+                discard_secret_reset_working_copy "$real_config" "$real_state" "$working_config" "$working_state" "$config_snapshot" "$state_snapshot"
+                err "[失败] 密钥重置事务失败，未修改原配置。"
+                return 1
+            fi
             [[ $rc -eq 0 ]] && changed="true"
-        done
+        done <<'EOF'
+reset_vless_enc_finalmask_secret|
+reset_vless_enc_xhttp_secret|
+reset_vless_xhttp_finalmask_secret|
+reset_reality_secret|
+reset_advanced_secret|xhttp-reality
+reset_advanced_secret|enc-reality
+reset_advanced_secret|fullstack
+EOF
     fi
 
     if [[ "$R_OPT" == "3" || "$R_OPT" == "4" ]]; then
         if jq -e --arg tag "$SOCKS_TAG" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1; then
             S_PASS="$(openssl rand -hex 8)"
-            tmp="$(mktemp)"
-            jq --arg tag "$SOCKS_TAG" --arg pass "$S_PASS" '(.inbounds[] | select(.tag == $tag).settings.accounts[0].pass) = $pass' "$CONFIG_FILE" >"$tmp" && mv "$tmp" "$CONFIG_FILE"
-            rm -f "$tmp"
+            [[ -n "$S_PASS" ]] || S_PASS="$(generate_uuid | tr -d '-')"
+            if [[ -z "$S_PASS" ]] || ! jq_config_update --arg tag "$SOCKS_TAG" --arg pass "$S_PASS" \
+                '(.inbounds[] | select(.tag == $tag).settings.accounts[0].pass) = $pass'; then
+                discard_secret_reset_working_copy "$real_config" "$real_state" "$working_config" "$working_state" "$config_snapshot" "$state_snapshot"
+                err "[失败] 生成或写入 SOCKS5 新密码失败，未修改原配置。"
+                return 1
+            fi
             ok "[完成] SOCKS5 密码已重置。"
             changed="true"
         else
@@ -439,22 +551,52 @@ reset_secrets() {
         fi
     fi
 
-    if [[ "$changed" == "true" ]]; then
-        apply_config || return 1
-        state_set_meta_action "重置密钥/密码" || err "[状态] 最近变更记录失败。"
-        view_config
-    else
+    if [[ "$changed" != "true" ]]; then
+        discard_secret_reset_working_copy "$real_config" "$real_state" "$working_config" "$working_state" "$config_snapshot" "$state_snapshot"
         info "[提示] 没有可更新的配置。"
+        return 0
     fi
+
+    if ! validate_config_file; then
+        discard_secret_reset_working_copy "$real_config" "$real_state" "$working_config" "$working_state" "$config_snapshot" "$state_snapshot"
+        err "[失败] 重置后的配置校验失败，未修改原配置。"
+        return 1
+    fi
+
+    CONFIG_FILE="$real_config"
+    STATE_FILE="$real_state"
+    if ! mv "$working_config" "$CONFIG_FILE" || ! mv "$working_state" "$STATE_FILE" || ! ensure_config_security; then
+        restore_secret_reset_snapshots "$config_snapshot" "$state_snapshot" || true
+        rm -f "$working_config" "$working_state" "$config_snapshot" "$state_snapshot"
+        err "[失败] 提交重置事务失败，已恢复原配置。"
+        return 1
+    fi
+    if ! restart_service; then
+        err "[失败] 重置后服务重启失败，正在恢复原配置。"
+        restore_secret_reset_snapshots "$config_snapshot" "$state_snapshot" || true
+        restart_service >/dev/null 2>&1 || true
+        rm -f "$config_snapshot" "$state_snapshot"
+        return 1
+    fi
+
+    rm -f "$config_snapshot" "$state_snapshot"
+    state_set_meta_action "重置密钥/密码" || err "[状态] 最近变更记录失败。"
+    view_config
 }
 
 remove_inbound() {
     local tag="$1"
     local tmp
     init_config || return 1
-    tmp="$(mktemp)"
-    jq --arg tag "$tag" '.inbounds = ((.inbounds // []) | map(select(.tag != $tag)))' "$CONFIG_FILE" >"$tmp" && mv "$tmp" "$CONFIG_FILE"
-    rm -f "$tmp"
+    tmp="$(config_temp_file)" || return 1
+    if ! jq --arg tag "$tag" '.inbounds = ((.inbounds // []) | map(select(.tag != $tag)))' "$CONFIG_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if ! mv "$tmp" "$CONFIG_FILE"; then
+        rm -f "$tmp"
+        return 1
+    fi
 }
 
 remove_simple_inbound_config() {
@@ -464,12 +606,12 @@ remove_simple_inbound_config() {
 
     [[ -f "$CONFIG_FILE" ]] || {
         info "[${label}] 未找到配置文件，视为未安装。"
-        state_delete_key "$state_key" 2>/dev/null || true
+        state_delete_key "$state_key" || return 1
         return 0
     }
 
     if ! jq -e --arg tag "$tag" '.inbounds[]? | select(.tag == $tag)' "$CONFIG_FILE" >/dev/null 2>&1; then
-        state_delete_key "$state_key" 2>/dev/null || true
+        state_delete_key "$state_key" || return 1
         ok "[完成] ${label} 未安装或已删除。"
         return 0
     fi
@@ -486,7 +628,10 @@ remove_simple_inbound_config() {
         return 1
     fi
 
-    state_delete_key "$state_key"
+    if ! state_delete_key "$state_key"; then
+        rollback_config_after_state_failure "${label} 删除"
+        return 1
+    fi
     state_set_meta_action "删除 ${label}" || err "[状态] 最近变更记录失败。"
     ok "[完成] ${label} 已删除。"
 }
@@ -494,30 +639,17 @@ remove_simple_inbound_config() {
 state_delete_key() {
     local key="$1"
     local tmp
-    init_state
-    tmp="$(mktemp)"
-    jq "del(.${key})" "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
-    rm -f "$tmp"
-    ensure_config_security
-}
-
-cleanup_legacy_singbox() {
-    read -r -p "确认删除旧 sing-box 服务与 /etc/sing-box、/usr/local/bin/sing-box? [y/N]: " CONFIRM
-    [[ "$CONFIRM" =~ ^[yY]$ ]] || return 0
-
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl stop sing-box >/dev/null 2>&1 || true
-        systemctl disable sing-box >/dev/null 2>&1 || true
-        rm -f /etc/systemd/system/sing-box.service
-        systemctl daemon-reload >/dev/null 2>&1 || true
+    init_state || return 1
+    tmp="$(state_temp_file)" || return 1
+    if ! jq --arg key "$key" 'del(.[$key])' "$STATE_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        return 1
     fi
-    if command -v rc-service >/dev/null 2>&1; then
-        rc-service sing-box stop >/dev/null 2>&1 || true
-        rc-update del sing-box >/dev/null 2>&1 || true
-        rm -f /etc/init.d/sing-box
+    if ! mv "$tmp" "$STATE_FILE"; then
+        rm -f "$tmp"
+        return 1
     fi
-    rm -rf /etc/sing-box /usr/local/bin/sing-box
-    ok "[完成] 旧 sing-box 残留已清理。"
+    ensure_config_security || return 1
 }
 
 installed_protocols_summary() {
@@ -564,8 +696,7 @@ render_uninstall_menu() {
     echo "10) 删除 SOCKS5 配置"
     echo "11) 删除 Hysteria2 配置"
     echo "12) 卸载全部 Xray"
-    echo "13) 清理旧 sing-box 残留"
-    echo "14) 返回主菜单"
+    echo "13) 返回主菜单"
 }
 
 uninstall() {
@@ -607,25 +738,39 @@ uninstall() {
             remove_hysteria2_config
             ;;
         12)
+            local service_file
+            validate_xray_binary_path "$BIN_PATH" || return 1
             read -r -p "确认卸载 Xray、配置和快捷命令? [y/N]: " CONFIRM
             [[ "$CONFIRM" =~ ^[yY]$ ]] || return 0
-            stop_service
+            stop_service || return 1
+            service_file="$(service_file_path)"
             if [[ "$INIT_SYSTEM" == "systemd" ]]; then
-                systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
-                rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
-                systemctl daemon-reload >/dev/null 2>&1 || true
+                if [[ -f "$service_file" ]] && grep -q "Managed by Xray-OneClick" "$service_file"; then
+                    systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+                    rm -f -- "$service_file" || return 1
+                    systemctl daemon-reload >/dev/null 2>&1 || true
+                elif [[ -f "$service_file" ]]; then
+                    info "[卸载] 检测到非本项目 service，已保留: $service_file"
+                fi
             elif [[ "$INIT_SYSTEM" == "openrc" ]]; then
-                rc-update del "$SERVICE_NAME" >/dev/null 2>&1 || true
-                rm -f "/etc/init.d/${SERVICE_NAME}"
+                if [[ -f "$service_file" ]] && grep -q "Managed by Xray-OneClick" "$service_file"; then
+                    rc-update del "$SERVICE_NAME" >/dev/null 2>&1 || true
+                    rm -f -- "$service_file" || return 1
+                elif [[ -f "$service_file" ]]; then
+                    info "[卸载] 检测到非本项目 OpenRC service，已保留: $service_file"
+                fi
             fi
-            rm -rf "$CONFIG_DIR" "$ASSET_DIR" "$INSTALLER_DIR" "$BIN_PATH" "$SHORTCUT_PATH" "$LEGACY_SHORTCUT_PATH"
+            remove_managed_tree "$CONFIG_DIR" || return 1
+            remove_managed_tree "$ASSET_DIR" || return 1
+            remove_managed_tree "$INSTALLER_DIR" || return 1
+            rm -f -- "$BIN_PATH" "$SHORTCUT_PATH" || return 1
             ok "[完成] Xray 已彻底卸载。当前 shell 如仍缓存 ike 路径，可执行 hash -r。"
             exit 0
             ;;
         13)
-            cleanup_legacy_singbox
+            return 0
             ;;
-        14 | "")
+        "")
             return 0
             ;;
         *)
@@ -678,7 +823,7 @@ configure_advanced_profiles_menu() {
                 fi
                 ;;
             4)
-                init_state
+                init_state || return 1
                 print_advanced_profile_result "xhttp-reality" "show"
                 print_advanced_profile_result "enc-reality" "show"
                 print_advanced_profile_result "fullstack" "show"

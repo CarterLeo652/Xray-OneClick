@@ -8,8 +8,9 @@ diag_info() { echo "[i] $*"; }
 
 redact_sensitive_stream() {
     sed -E \
-        -e 's/("(privateKey|private_key|decryption|password|pass|token|secret)"[[:space:]]*:[[:space:]]*")[^"]*/\1***REDACTED***/Ig' \
-        -e 's/((privateKey|private_key|decryption|password|pass|token|secret|method secret)[[:space:]]*[=:][[:space:]]*)[^[:space:],;]+/\1***REDACTED***/Ig'
+        -e 's/("(privateKey|private_key|decryption|password|pass|token|secret|auth|id|uuid|shortIds|short_ids)"[[:space:]]*:[[:space:]]*")[^"]*/\1***REDACTED***/Ig' \
+        -e 's/((privateKey|private_key|decryption|password|pass|token|secret|auth|uuid|shortIds|short_ids|method secret)[[:space:]]*[=:][[:space:]]*)[^[:space:],;]+/\1***REDACTED***/Ig' \
+        -e 's#(vless|hysteria2|hy2|ss|socks)://[^[:space:]]+#\1://***REDACTED***#Ig'
 }
 
 inbound_exists() {

@@ -4,9 +4,12 @@
 replace_xray_binary() {
     local new_binary="$1"
     local backup_path=""
-    local staging_path
+    local staging_path had_original="false"
 
-    staging_path="${BIN_PATH}.new.$$"
+    validate_xray_binary_path "$BIN_PATH" || return 1
+    XRAY_REPLACED_BACKUP_PATH=""
+    XRAY_REPLACED_HAD_ORIGINAL="false"
+    staging_path="$(mktemp "${BIN_PATH}.new.XXXXXX")" || return 1
 
     if ! install -m 755 "$new_binary" "$staging_path"; then
         rm -f "$staging_path"
@@ -15,12 +18,17 @@ replace_xray_binary() {
     fi
 
     if [[ -e "$BIN_PATH" ]]; then
-        backup_path="${BIN_PATH}.bak.$(date +%Y%m%d%H%M%S)"
+        backup_path="$(mktemp "${BIN_PATH}.bak.$(date +%Y%m%d%H%M%S).XXXXXX")" || {
+            rm -f "$staging_path"
+            return 1
+        }
+        rm -f "$backup_path"
         if ! mv "$BIN_PATH" "$backup_path"; then
             rm -f "$staging_path"
             err "[核心] 备份旧 Xray 二进制失败，已中止更新。"
             return 1
         fi
+        had_original="true"
     fi
 
     if ! mv "$staging_path" "$BIN_PATH"; then
@@ -34,8 +42,37 @@ replace_xray_binary() {
 
     chmod +x "$BIN_PATH" || {
         err "[核心] 设置 $BIN_PATH 可执行权限失败。"
+        rm -f "$BIN_PATH"
+        if [[ "$had_original" == "true" && -e "$backup_path" ]]; then
+            mv "$backup_path" "$BIN_PATH" >/dev/null 2>&1 || true
+        fi
         return 1
     }
+    XRAY_REPLACED_BACKUP_PATH="$backup_path"
+    XRAY_REPLACED_HAD_ORIGINAL="$had_original"
+}
+
+rollback_xray_binary_replacement() {
+    local backup_path="${1:-}"
+    local had_original="${2:-false}"
+
+    if ! rm -f -- "$BIN_PATH"; then
+        err "[核心] 回滚时无法移除新 Xray 二进制: $BIN_PATH"
+        return 1
+    fi
+    if [[ "$had_original" == "true" ]]; then
+        if [[ -z "$backup_path" || ! -e "$backup_path" ]]; then
+            err "[核心] 回滚所需的旧 Xray 二进制不存在。"
+            return 1
+        fi
+        if ! mv "$backup_path" "$BIN_PATH"; then
+            err "[核心] 恢复旧 Xray 二进制失败: $BIN_PATH"
+            return 1
+        fi
+        chmod +x "$BIN_PATH" || return 1
+    fi
+    XRAY_REPLACED_BACKUP_PATH=""
+    XRAY_REPLACED_HAD_ORIGINAL="false"
 }
 
 detect_xray_version() {
@@ -186,24 +223,77 @@ xray_release_metadata() {
 xray_release_asset_url() {
     local version="${1:-latest}"
     local channel="${2:-stable}"
-    local release_json release_url release
+    local release_json release_url
 
     channel="$(normalize_xray_channel "$channel")" || {
         err "[核心] 未知 Xray 通道: ${channel}"
         return 1
     }
     release_json="$(xray_release_metadata "$version" "$channel")" || return 1
-    XRAY_DOWNLOAD_CHANNEL="$channel"
-    XRAY_DOWNLOAD_VERSION="$(echo "$release_json" | jq -r --arg fallback "$version" '.tag_name // $fallback')"
-    XRAY_DOWNLOAD_IS_PRERELEASE="$(echo "$release_json" | jq -r '.prerelease // false')"
-    if [[ "$version" == "latest" && "$channel" == "prerelease" ]]; then
-        release="$(echo "$release_json" | jq -c --arg asset "$XRAY_ASSET" 'map(select(.prerelease == true and any(.assets[]?; .name == $asset))) | .[0] // empty')"
-        [[ -n "$release" && "$release" != "null" ]] || return 1
-        release_json="$release"
-    fi
     release_url="$(echo "$release_json" | jq -r --arg asset "$XRAY_ASSET" '.assets[]? | select(.name == $asset) | .browser_download_url' | head -n 1)"
     [[ -n "$release_url" && "$release_url" != "null" ]] || return 1
     printf '%s' "$release_url"
+}
+
+xray_release_asset_info() {
+    local version="${1:-latest}"
+    local channel="${2:-stable}"
+    local release_json asset_info
+
+    channel="$(normalize_xray_channel "$channel")" || {
+        err "[核心] 未知 Xray 通道: ${channel}"
+        return 1
+    }
+    release_json="$(xray_release_metadata "$version" "$channel")" || return 1
+    asset_info="$(printf '%s' "$release_json" | jq -r --arg asset "$XRAY_ASSET" --arg fallback "$version" --arg empty "" '
+      . as $release |
+      first($release.assets[]? | select(.name == $asset)) as $matched |
+      [
+        $matched.browser_download_url,
+        ($release.tag_name // $fallback),
+        (($release.prerelease // false) | tostring),
+        ($matched.digest // $empty)
+      ] | @tsv
+    ' 2>/dev/null)" || return 1
+    [[ -n "$asset_info" ]] || return 1
+    printf '%s' "$asset_info"
+}
+
+verify_xray_asset_digest() {
+    local archive="$1"
+    local digest="${2:-}"
+    local algorithm expected actual
+
+    if [[ -z "$digest" || "$digest" == "null" ]]; then
+        info "[核心] release API 未提供资产摘要，跳过 SHA-256 校验。"
+        return 0
+    fi
+
+    algorithm="${digest%%:*}"
+    expected="${digest#*:}"
+    algorithm="${algorithm,,}"
+    expected="${expected,,}"
+    if [[ "$algorithm" != "sha256" || ! "$expected" =~ ^[[:xdigit:]]{64}$ ]]; then
+        err "[核心] release API 返回了不支持的资产摘要: $digest"
+        return 1
+    fi
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual="$(sha256sum "$archive" | awk '{print tolower($1)}')"
+    elif command -v openssl >/dev/null 2>&1; then
+        actual="$(openssl dgst -sha256 "$archive" 2>/dev/null | awk '{print tolower($NF)}')"
+    else
+        err "[核心] 缺少 sha256sum/openssl，无法校验 Xray 资产摘要。"
+        return 1
+    fi
+
+    if [[ "$actual" != "$expected" ]]; then
+        err "[核心] Xray 资产 SHA-256 校验失败。"
+        err "[核心] expected=$expected"
+        err "[核心] actual=${actual:-无法计算}"
+        return 1
+    fi
+    info "[核心] Xray 资产 SHA-256 校验通过。"
 }
 
 verify_xray_archive() {
@@ -241,10 +331,12 @@ download_xray_core() {
     local version="${1:-latest}"
     local channel="${2:-stable}"
     local tmpdir="${3:-}"
-    local url zip_path
+    local asset_info url zip_path resolved_version prerelease digest
 
-    [[ -n "$tmpdir" ]] || tmpdir="$(mktemp -d)"
-    mkdir -p "$tmpdir"
+    if [[ -z "$tmpdir" ]]; then
+        tmpdir="$(mktemp -d)" || return 1
+    fi
+    mkdir -p "$tmpdir" || return 1
     channel="$(normalize_xray_channel "$channel")" || {
         err "[核心] 未知 Xray 通道: ${channel}"
         return 1
@@ -252,12 +344,22 @@ download_xray_core() {
     XRAY_DOWNLOAD_CHANNEL="$channel"
     XRAY_DOWNLOAD_IS_PRERELEASE="false"
     XRAY_DOWNLOAD_VERSION="$version"
-    url="$(xray_release_asset_url "$version" "$channel")" || {
+    XRAY_DOWNLOAD_DIGEST=""
+    asset_info="$(xray_release_asset_info "$version" "$channel")" || {
         err "[核心] 无法解析 Xray 下载地址。"
         return 1
     }
+    IFS=$'\t' read -r url resolved_version prerelease digest <<<"$asset_info"
+    [[ -n "$url" ]] || {
+        err "[核心] release 中未找到资产: $XRAY_ASSET"
+        return 1
+    }
+    XRAY_DOWNLOAD_VERSION="${resolved_version:-$version}"
+    XRAY_DOWNLOAD_IS_PRERELEASE="${prerelease:-false}"
+    XRAY_DOWNLOAD_DIGEST="${digest:-}"
     zip_path="${tmpdir}/${XRAY_ASSET}"
     download_with_mirrors "$url" "$zip_path" || return 1
+    verify_xray_asset_digest "$zip_path" "$XRAY_DOWNLOAD_DIGEST" || return 1
     verify_xray_archive "$zip_path" "$tmpdir" || return 1
 }
 
@@ -273,7 +375,7 @@ upgrade_xray_core() {
     local channel="${2:-stable}"
     local dry_run="${3:-false}"
     local restart="${4:-false}"
-    local tmpdir backup_path=""
+    local tmpdir backup_path="" had_original="false"
 
     channel="$(normalize_xray_channel "$channel")" || {
         err "[核心] 未知 Xray 通道: ${channel}"
@@ -295,29 +397,38 @@ upgrade_xray_core() {
         return 0
     fi
 
-    [[ -e "$BIN_PATH" ]] && backup_path="${BIN_PATH}.bak.$(date +%Y%m%d%H%M%S)" && cp -a "$BIN_PATH" "$backup_path"
     install_xray_binary "$XRAY_EXTRACTED_BINARY" || {
-        [[ -n "$backup_path" && -f "$backup_path" ]] && cp -a "$backup_path" "$BIN_PATH"
         rm -rf "$tmpdir"
         return 1
     }
+    backup_path="${XRAY_REPLACED_BACKUP_PATH:-}"
+    had_original="${XRAY_REPLACED_HAD_ORIGINAL:-false}"
     if [[ -f "$CONFIG_FILE" ]] && ! validate_config_file; then
         err "[核心] 升级后配置校验失败，正在回滚 xray binary。"
-        [[ -n "$backup_path" && -f "$backup_path" ]] && cp -a "$backup_path" "$BIN_PATH"
+        rollback_xray_binary_replacement "$backup_path" "$had_original" || true
         rm -rf "$tmpdir"
         return 1
     fi
     info "[核心] Xray 已升级: $(detect_xray_version 2>/dev/null || printf '%s' '版本未知')"
     info "[核心] 通道: ${XRAY_DOWNLOAD_CHANNEL:-$channel} / 版本: ${XRAY_DOWNLOAD_VERSION:-$version} / prerelease: ${XRAY_DOWNLOAD_IS_PRERELEASE:-false}"
-    [[ "$restart" == "true" ]] && restart_xray_service
+    if [[ "$restart" == "true" ]] && ! restart_xray_service; then
+        err "[核心] 新版本重启失败，正在恢复旧 Xray 二进制。"
+        rollback_xray_binary_replacement "$backup_path" "$had_original" || true
+        [[ "$had_original" == "true" ]] && restart_xray_service >/dev/null 2>&1 || true
+        rm -rf "$tmpdir"
+        return 1
+    fi
     rm -rf "$tmpdir"
 }
 
 apply_config() {
     local context="${1:-}"
 
-    ensure_default_safety_blocks || return 1
-    ensure_config_security
+    if ! ensure_default_safety_blocks || ! ensure_config_security; then
+        err "[回滚] 配置预处理失败，正在恢复最近备份。"
+        restore_latest_config_backup >/dev/null 2>&1 || true
+        return 1
+    fi
     [[ -n "$context" ]] && info "[${context}] 正在校验 Xray 配置..."
     if ! validate_config_file; then
         [[ -n "$context" ]] && err "[失败] [${context}] Xray 配置校验失败。"
@@ -357,7 +468,7 @@ install_or_update_xray() {
     local force="${1:-false}"
     local version="${XRAY_VERSION_REQUEST:-${XRAY_VERSION:-latest}}"
     local channel="${XRAY_CHANNEL_REQUEST:-${XRAY_CHANNEL:-stable}}"
-    local tmpdir replacing_existing
+    local tmpdir replacing_existing service_was_active="false" backup_path="" had_original="false"
 
     channel="$(normalize_xray_channel "$channel")" || {
         err "[核心] 未知 Xray 通道: ${channel}"
@@ -373,7 +484,10 @@ install_or_update_xray() {
         return 0
     fi
 
-    tmpdir="$(mktemp -d)"
+    tmpdir="$(mktemp -d)" || {
+        err "[核心] 创建下载临时目录失败。"
+        return 1
+    }
     info "[核心] 下载 Xray ${version} (${channel} 通道, ${XRAY_ASSET})..."
     if ! download_xray_core "$version" "$channel" "$tmpdir"; then
         rm -rf "$tmpdir"
@@ -390,6 +504,7 @@ install_or_update_xray() {
     [[ -e "$BIN_PATH" ]] && replacing_existing="true"
 
     if [[ "$replacing_existing" == "true" ]]; then
+        xray_service_is_active && service_was_active="true"
         if ! create_service; then
             rm -rf "$tmpdir"
             err "[服务] 创建或刷新服务文件失败，已中止更新。"
@@ -403,37 +518,75 @@ install_or_update_xray() {
 
     if ! replace_xray_binary "$XRAY_EXTRACTED_BINARY"; then
         rm -rf "$tmpdir"
+        [[ "$service_was_active" == "true" ]] && restart_service >/dev/null 2>&1 || true
         return 1
     fi
+    backup_path="${XRAY_REPLACED_BACKUP_PATH:-}"
+    had_original="${XRAY_REPLACED_HAD_ORIGINAL:-false}"
 
     if [[ -f "${tmpdir}/geoip.dat" ]] && ! cp "${tmpdir}/geoip.dat" "$ASSET_DIR/"; then
+        rollback_xray_binary_replacement "$backup_path" "$had_original" || true
+        [[ "$service_was_active" == "true" ]] && restart_service >/dev/null 2>&1 || true
         rm -rf "$tmpdir"
         err "[核心] 更新 geoip.dat 失败。"
         return 1
     fi
     if [[ -f "${tmpdir}/geosite.dat" ]] && ! cp "${tmpdir}/geosite.dat" "$ASSET_DIR/"; then
+        rollback_xray_binary_replacement "$backup_path" "$had_original" || true
+        [[ "$service_was_active" == "true" ]] && restart_service >/dev/null 2>&1 || true
         rm -rf "$tmpdir"
         err "[核心] 更新 geosite.dat 失败。"
         return 1
     fi
 
-    rm -rf "$tmpdir"
-
-    ensure_default_safety_blocks || return 1
+    if ! ensure_default_safety_blocks; then
+        rollback_xray_binary_replacement "$backup_path" "$had_original" || true
+        [[ "$service_was_active" == "true" ]] && restart_service >/dev/null 2>&1 || true
+        rm -rf "$tmpdir"
+        return 1
+    fi
 
     if ! create_service; then
         err "[服务] 创建或刷新服务文件失败。"
+        rollback_xray_binary_replacement "$backup_path" "$had_original" || true
+        [[ "$service_was_active" == "true" ]] && restart_service >/dev/null 2>&1 || true
+        rm -rf "$tmpdir"
         return 1
     fi
+
+    if [[ "$replacing_existing" == "true" && -f "$CONFIG_FILE" ]] && ! validate_config_file; then
+        err "[核心] 新 Xray 无法加载当前配置，正在恢复旧版本。"
+        rollback_xray_binary_replacement "$backup_path" "$had_original" || true
+        [[ "$service_was_active" == "true" ]] && restart_service >/dev/null 2>&1 || true
+        rm -rf "$tmpdir"
+        return 1
+    fi
+    if [[ "$service_was_active" == "true" ]] && ! restart_service; then
+        err "[核心] 新 Xray 重启失败，正在恢复旧版本。"
+        rollback_xray_binary_replacement "$backup_path" "$had_original" || true
+        restart_service >/dev/null 2>&1 || true
+        rm -rf "$tmpdir"
+        return 1
+    fi
+
+    rm -rf "$tmpdir"
 
     ok "[核心] Xray ${XRAY_DOWNLOAD_VERSION:-$version} 安装/更新完成。"
     info "[核心] 通道: ${XRAY_DOWNLOAD_CHANNEL:-$channel} / prerelease: ${XRAY_DOWNLOAD_IS_PRERELEASE:-false}"
 }
 
 update_xray_core() {
+    local backup_path had_original
+
     prepare_system || return 1
     install_or_update_xray true || return 1
-    validate_config_file || return 1
-    restart_service || return 1
+    backup_path="${XRAY_REPLACED_BACKUP_PATH:-}"
+    had_original="${XRAY_REPLACED_HAD_ORIGINAL:-false}"
+    if ! validate_config_file || ! restart_service; then
+        err "[核心] 更新后的校验或重启失败，正在恢复旧 Xray 二进制。"
+        rollback_xray_binary_replacement "$backup_path" "$had_original" || true
+        [[ "$had_original" == "true" ]] && restart_service >/dev/null 2>&1 || true
+        return 1
+    fi
     ok "[核心] Xray 已更新并重启。"
 }

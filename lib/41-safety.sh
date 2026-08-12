@@ -30,7 +30,7 @@ ensure_default_safety_blocks() {
     private_mode="$(default_private_block_mode_arg)"
     info "[安全] 默认私网屏蔽模式: $(default_private_block_mode)"
 
-    tmp="$(mktemp)" || {
+    tmp="$(config_temp_file)" || {
         err "[失败] [安全] 创建临时文件失败。"
         return 1
     }
@@ -138,7 +138,7 @@ set_enhanced_safety_block() {
         return 1
     }
 
-    tmp="$(mktemp)" || {
+    tmp="$(config_temp_file)" || {
         err "[失败] [安全] 创建临时文件失败。"
         return 1
     }
@@ -363,7 +363,7 @@ set_china_direct_block() {
         return 1
     }
 
-    tmp="$(mktemp)" || {
+    tmp="$(config_temp_file)" || {
         err "[失败] [路由] 创建临时文件失败。"
         return 1
     }
@@ -441,9 +441,15 @@ set_china_direct_block() {
     fi
 
     if [[ "$mode" == "off" ]]; then
-        state_set_cnblock "false" "true" || err "[状态] cnblock 状态写入失败。"
+        if ! state_set_cnblock "false" "true"; then
+            rollback_config_after_state_failure "中国大陆直连屏蔽"
+            return 1
+        fi
     else
-        state_set_cnblock "true" "true" || err "[状态] cnblock 状态写入失败。"
+        if ! state_set_cnblock "true" "true"; then
+            rollback_config_after_state_failure "中国大陆直连屏蔽"
+            return 1
+        fi
     fi
     case "$mode" in
         basic) action="基础模式" ;;

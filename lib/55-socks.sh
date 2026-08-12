@@ -2,10 +2,10 @@
 # SOCKS5 proxy install.
 
 state_set_socks5() {
-    init_state
+    init_state || return 1
     local tmp
 
-    tmp="$(mktemp)" || return 1
+    tmp="$(state_temp_file)" || return 1
     if ! jq --arg tag "$SOCKS_TAG" \
         --arg port "$S_PORT" \
         --arg listen "0.0.0.0" \
@@ -26,7 +26,7 @@ state_set_socks5() {
         err "[失败] [SOCKS5] 更新状态文件失败。"
         return 1
     fi
-    ensure_config_security
+    ensure_config_security || return 1
 }
 
 install_socks5() {
@@ -36,6 +36,8 @@ install_socks5() {
     S_USER="${S_USER:-admin}"
     read -r -p "密码 (默认: 随机): " S_PASS
     S_PASS="${S_PASS:-$(openssl rand -hex 8)}"
+    [[ -n "$S_PASS" ]] || S_PASS="$(generate_uuid | tr -d '-')"
+    [[ -n "$S_PASS" ]] || return 1
 
     install_or_update_xray || return 1
     backup_config || {
@@ -44,7 +46,7 @@ install_socks5() {
     }
 
     local tmp
-    tmp="$(mktemp)" || {
+    tmp="$(config_temp_file)" || {
         err "[失败] [SOCKS5] 创建临时文件失败。"
         return 1
     }
@@ -76,7 +78,10 @@ install_socks5() {
     fi
 
     apply_config || return 1
-    state_set_socks5 || err "[状态] SOCKS5 状态写入失败，但 config.json 已生效。"
+    if ! state_set_socks5; then
+        rollback_config_after_state_failure "SOCKS5"
+        return 1
+    fi
     state_set_meta_action "安装 SOCKS5" || err "[状态] 最近变更记录失败。"
     ok "[完成] SOCKS5 已写入 Xray 配置。"
     view_config

@@ -371,6 +371,10 @@ doctor_proxy() {
 run_doctor_command() {
     local target="${1:-all}"
 
+    [[ $# -le 1 ]] || {
+        err "[失败] doctor 参数过多。"
+        return 1
+    }
     check_os
     detect_arch
 

@@ -2,16 +2,32 @@
 # installer-state.json lifecycle.
 
 init_state() {
-    mkdir -p "$CONFIG_DIR"
-    [[ -f "$STATE_FILE" ]] || echo '{}' >"$STATE_FILE"
+    local broken_state tmp
+
+    mkdir -p "$CONFIG_DIR" || return 1
+    command -v jq >/dev/null 2>&1 || return 1
+    if [[ ! -f "$STATE_FILE" ]]; then
+        tmp="$(state_temp_file)" || return 1
+        if ! printf '%s\n' '{}' >"$tmp" || ! mv "$tmp" "$STATE_FILE"; then
+            rm -f "$tmp"
+            return 1
+        fi
+    fi
     if ! jq empty "$STATE_FILE" >/dev/null 2>&1; then
-        mv "$STATE_FILE" "${STATE_FILE}.broken.$(date +%Y%m%d%H%M%S)"
-        echo '{}' >"$STATE_FILE"
+        broken_state="$(mktemp "${STATE_FILE}.broken.$(date +%Y%m%d%H%M%S).XXXXXX")" || return 1
+        rm -f "$broken_state"
+        if ! mv "$STATE_FILE" "$broken_state"; then
+            return 1
+        fi
+        tmp="$(state_temp_file)" || return 1
+        if ! printf '%s\n' '{}' >"$tmp" || ! mv "$tmp" "$STATE_FILE"; then
+            rm -f "$tmp"
+            return 1
+        fi
     fi
 
-    local tmp
-    tmp="$(mktemp)"
-    jq '
+    tmp="$(state_temp_file)" || return 1
+    if ! jq '
       (if (.vless_encryption? | type) == "object" then
         .vless_encryption |= del(.flow)
       else
@@ -21,11 +37,17 @@ init_state() {
       .endpoint = (if (.endpoint? | type) == "object" then .endpoint else {} end) |
       .forwards = (if (.forwards? | type) == "array" then .forwards else [] end) |
       .tunnels = (if (.tunnels? | type) == "array" then .tunnels else .forwards end)
-    ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
-    rm -f "$tmp"
+    ' "$STATE_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if ! mv "$tmp" "$STATE_FILE"; then
+        rm -f "$tmp"
+        return 1
+    fi
 
     ensure_cnblock_state_defaults || return 1
-    ensure_config_security
+    ensure_config_security || return 1
 }
 
 cnblock_rules_present() {
@@ -52,7 +74,7 @@ ensure_cnblock_state_defaults() {
         return 0
     fi
 
-    tmp="$(mktemp)" || return 1
+    tmp="$(state_temp_file)" || return 1
     if ! jq '
       .cnblock_enabled = (.cnblock_enabled // false) |
       .cnblock_user_set = (.cnblock_user_set // false)
@@ -65,16 +87,16 @@ ensure_cnblock_state_defaults() {
         return 1
     }
     rm -f "$tmp"
-    ensure_config_security
+    ensure_config_security || return 1
 }
 
 state_set_cnblock() {
-    init_state
+    init_state || return 1
     local enabled="$1"
     local user_set="$2"
     local tmp
 
-    tmp="$(mktemp)" || return 1
+    tmp="$(state_temp_file)" || return 1
     if ! jq --arg enabled "$enabled" --arg user_set "$user_set" '
       .cnblock_enabled = ($enabled == "true") |
       .cnblock_user_set = ($user_set == "true")
@@ -87,7 +109,7 @@ state_set_cnblock() {
         return 1
     }
     rm -f "$tmp"
-    ensure_config_security
+    ensure_config_security || return 1
 }
 
 state_set_meta_action() {
@@ -99,9 +121,9 @@ state_set_meta_action() {
         err "[失败] [状态] 缺少 jq，无法更新最近变更。"
         return 1
     }
-    init_state
+    init_state || return 1
     timestamp="$(date '+%Y-%m-%d %H:%M:%S %z')"
-    tmp="$(mktemp)" || {
+    tmp="$(state_temp_file)" || {
         err "[失败] [状态] 创建临时文件失败。"
         return 1
     }
@@ -122,5 +144,25 @@ state_set_meta_action() {
         return 1
     }
     rm -f "$tmp"
-    ensure_config_security
+    ensure_config_security || return 1
+}
+
+create_state_snapshot() {
+    local snapshot
+
+    init_state || return 1
+    snapshot="$(mktemp "${STATE_FILE}.rollback.XXXXXX")" || return 1
+    if ! cp -a "$STATE_FILE" "$snapshot"; then
+        rm -f "$snapshot"
+        return 1
+    fi
+    printf '%s' "$snapshot"
+}
+
+restore_state_snapshot() {
+    local snapshot="$1"
+
+    [[ -f "$snapshot" ]] || return 1
+    cp -a "$snapshot" "$STATE_FILE" || return 1
+    ensure_config_security || return 1
 }

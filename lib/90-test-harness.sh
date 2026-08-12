@@ -21,7 +21,6 @@ setup_test_config_generation_env() {
     INSTALLER_DIR="${root}/share/ike"
     INSTALLER_PATH="${INSTALLER_DIR}/install.sh"
     SHORTCUT_PATH="${root}/bin/ike"
-    LEGACY_SHORTCUT_PATH="${root}/bin/sb"
     mkdir -p "$CONFIG_DIR" "$ASSET_DIR" "$INSTALLER_DIR" "${root}/bin" || return 1
     mkdir -p "${root}/tmp" || return 1
     export TMPDIR="${root}/tmp"
@@ -232,4 +231,3 @@ run_test_config_generate_command() {
         return 1
     }
 }
-

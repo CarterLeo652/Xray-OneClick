@@ -48,12 +48,12 @@ configure_ss2022() {
 }
 
 state_set_ss2022() {
-    init_state
+    init_state || return 1
     local tmp listen_scope
 
     listen_scope="$(protocol_listen_scope "${SS_LISTEN:-}")"
-    tmp="$(mktemp)" || return 1
-    jq --arg tag "$SS_TAG" \
+    tmp="$(state_temp_file)" || return 1
+    if ! jq --arg tag "$SS_TAG" \
         --arg port "$SS_PORT" \
         --arg listen "${SS_LISTEN:-}" \
         --arg listen_scope "$listen_scope" '
@@ -63,9 +63,17 @@ state_set_ss2022() {
           "listen": $listen,
           "listen_scope": $listen_scope
         }
-       ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
-    rm -f "$tmp"
-    ensure_config_security
+       ' "$STATE_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        err "[状态] 生成 SS2022 状态失败。"
+        return 1
+    fi
+    if ! mv "$tmp" "$STATE_FILE"; then
+        rm -f "$tmp"
+        err "[状态] 写入 SS2022 状态失败。"
+        return 1
+    fi
+    ensure_config_security || return 1
 }
 
 install_ss2022() {
@@ -81,7 +89,7 @@ install_ss2022() {
     fi
 
     local tmp
-    tmp="$(mktemp)" || {
+    tmp="$(config_temp_file)" || {
         err "[失败] [SS2022] 创建临时文件失败。"
         return 1
     }
@@ -121,7 +129,10 @@ install_ss2022() {
         err "[失败] [SS2022] 应用配置失败。"
         return 1
     fi
-    state_set_ss2022 || err "[状态] SS2022 状态写入失败，但 config.json 已生效。"
+    if ! state_set_ss2022; then
+        rollback_config_after_state_failure "SS2022"
+        return 1
+    fi
     state_set_meta_action "安装 SS2022" || err "[状态] 最近变更记录失败。"
     ok "[完成] SS2022 已写入 Xray 配置。"
     view_config

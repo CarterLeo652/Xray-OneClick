@@ -85,10 +85,10 @@ configure_vless_encryption() {
 }
 
 state_set_vless() {
-    init_state
+    init_state || return 1
     local tmp
-    tmp="$(mktemp)"
-    jq --arg tag "$VLESS_TAG" \
+    tmp="$(state_temp_file)" || return 1
+    if ! jq --arg tag "$VLESS_TAG" \
         --arg uuid "$VLESS_UUID" \
         --arg encryption "$VLESS_ENCRYPTION" \
         --arg auth "$VLESS_AUTH" \
@@ -110,17 +110,32 @@ state_set_vless() {
           "port": ($port|tonumber),
           "listen_scope": $listen_scope
         }
-       ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
+       ' "$STATE_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        err "[失败] [VLESS Encryption] 生成状态文件失败。"
+        return 1
+    fi
+    if ! mv "$tmp" "$STATE_FILE"; then
+        rm -f "$tmp"
+        err "[失败] [VLESS Encryption] 写入状态文件失败。"
+        return 1
+    fi
     rm -f "$tmp"
-    ensure_config_security
+    ensure_config_security || return 1
 }
 
 install_vless_encryption() {
-    backup_config
+    if ! backup_config; then
+        err "[失败] [VLESS Encryption] 配置备份失败。"
+        return 1
+    fi
 
     local tmp
-    tmp="$(mktemp)"
-    jq --arg tag "$VLESS_TAG" \
+    tmp="$(config_temp_file)" || {
+        err "[失败] [VLESS Encryption] 创建临时文件失败。"
+        return 1
+    }
+    if ! jq --arg tag "$VLESS_TAG" \
         --arg listen "$VLESS_LISTEN" \
         --arg port "$VLESS_PORT" \
         --arg uuid "$VLESS_UUID" \
@@ -149,11 +164,23 @@ install_vless_encryption() {
             "destOverride": ["http", "tls"]
           }
         }]
-       ' "$CONFIG_FILE" >"$tmp" && mv "$tmp" "$CONFIG_FILE"
+       ' "$CONFIG_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        err "[失败] [VLESS Encryption] 生成配置失败。"
+        return 1
+    fi
+    if ! mv "$tmp" "$CONFIG_FILE"; then
+        rm -f "$tmp"
+        err "[失败] [VLESS Encryption] 写入 $CONFIG_FILE 失败。"
+        return 1
+    fi
     rm -f "$tmp"
 
-    state_set_vless
     apply_config || return 1
+    if ! state_set_vless; then
+        rollback_config_after_state_failure "VLESS Encryption"
+        return 1
+    fi
     state_set_meta_action "安装 VLESS Encryption" || err "[状态] 最近变更记录失败。"
     ok "[完成] VLESS Encryption 已写入 Xray 配置。"
     view_config
@@ -238,12 +265,12 @@ build_vless_enc_finalmask_share_link() {
 }
 
 state_set_vless_enc_finalmask() {
-    init_state
+    init_state || return 1
     local tmp link timestamp
     link="$(build_vless_enc_finalmask_share_link || true)"
     timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    tmp="$(mktemp)"
-    jq --arg key "$VLESS_ENC_FM_STATE_KEY" \
+    tmp="$(state_temp_file)" || return 1
+    if ! jq --arg key "$VLESS_ENC_FM_STATE_KEY" \
         --arg tag "$VLESS_ENC_FM_TAG" \
         --arg uuid "$VLESS_UUID" \
         --arg encryption "$VLESS_ENCRYPTION" \
@@ -272,9 +299,17 @@ state_set_vless_enc_finalmask() {
           "listen_scope": $listen_scope,
           "updated_at": $updated
         }
-       ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
-    rm -f "$tmp"
-    ensure_config_security
+       ' "$STATE_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        err "[状态] 生成 ENC-FinalMask 状态失败。"
+        return 1
+    fi
+    if ! mv "$tmp" "$STATE_FILE"; then
+        rm -f "$tmp"
+        err "[状态] 写入 ENC-FinalMask 状态失败。"
+        return 1
+    fi
+    ensure_config_security || return 1
 }
 
 install_vless_enc_finalmask() {
@@ -293,7 +328,7 @@ install_vless_enc_finalmask() {
         }
     fi
 
-    tmp="$(mktemp)" || return 1
+    tmp="$(config_temp_file)" || return 1
     if ! jq --arg tag "$VLESS_ENC_FM_TAG" \
         --arg listen "${VLESS_ENC_FM_LISTEN:-0.0.0.0}" \
         --arg port "$VLESS_ENC_FM_PORT" \
@@ -354,7 +389,10 @@ install_vless_enc_finalmask() {
         err "[ENC-FinalMask] 配置未通过 Xray 校验；sudoku FinalMask 需要较新的 Xray-core 支持。"
         return 1
     fi
-    state_set_vless_enc_finalmask || err "[状态] ENC-FinalMask 状态写入失败，但 config.json 已生效。"
+    if ! state_set_vless_enc_finalmask; then
+        rollback_config_after_state_failure "ENC-FinalMask"
+        return 1
+    fi
     state_set_meta_action "安装 VLESS Encryption + FinalMask" || err "[状态] 最近变更记录失败。"
     ok "[完成] VLESS Encryption + FinalMask 已写入 Xray 配置。"
     print_vless_enc_finalmask_result

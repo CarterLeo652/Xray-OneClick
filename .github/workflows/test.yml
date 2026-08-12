@@ -8,50 +8,14 @@ on:
   pull_request:
 
 jobs:
-  config-generation:
+  docker-tests:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify lib modules
-        run: |
-          for f in \
-            00-bootstrap.sh 01-constants.sh 02-output.sh 03-installer.sh 03-system.sh 20-paths.sh 40-network.sh \
-            41-safety.sh 21-config-base.sh 22-state.sh 31-service.sh 30-xray-core.sh \
-            50-vless-common.sh 54-ss2022.sh 50-vless-enc.sh \
-            51-reality.sh 52-xhttp.sh 53-advanced.sh 55-socks.sh 56-tunnel.sh 57-hysteria2.sh \
-            70-view.sh 71-cli-view.sh 80-menu.sh \
-            63-diag.sh 60-doctor.sh 61-smoke.sh 62-export.sh \
-            73-cli-migrate.sh 72-cli-core.sh 72-cli-admin.sh 74-cli-protocols.sh \
-            90-test-harness.sh 81-help.sh
-          do
-            test -f "lib/$f"
-          done
-          lines=$(wc -l < install.sh)
-          echo "install.sh lines: $lines"
-          test "$lines" -lt 900
+      - name: Build test image
+        run: docker build --pull -f Dockerfile.test -t xray-oneclick-test .
 
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y jq shellcheck
-
-      - name: Version consistency
-        run: |
-          script_ver=$(grep -m1 '^SCRIPT_VERSION=' lib/01-constants.sh | sed -E 's/^SCRIPT_VERSION="([^"]+)".*/\1/')
-          file_ver=$(tr -d '\r\n' < VERSION)
-          readme_ver=$(grep -m1 '当前版本' README.md | sed -E 's/.*\*\*([0-9.]+)\*\*.*/\1/')
-          echo "SCRIPT_VERSION=$script_ver VERSION=$file_ver README=$readme_ver"
-          test "$script_ver" = "$file_ver"
-          test "$script_ver" = "$readme_ver"
-
-      - name: Bash syntax check
-        run: bash -n install.sh
-
-      - name: ShellCheck modular libraries
-        run: shellcheck -x -S error lib/*.sh
-
-      - name: Smoke test CLI entry
-        run: bash install.sh version
-
-      - name: Run offline config generation tests
-        run: bash tests/test_config_generation.sh
+      - name: Run complete test suite
+        run: docker run --rm xray-oneclick-test

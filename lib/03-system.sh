@@ -49,11 +49,14 @@ enable_bbr() {
     fi
 
     info "[系统] 尝试启用 BBR..."
-    cat >/etc/sysctl.d/99-xray-installer-bbr.conf <<EOF
+    if ! cat >/etc/sysctl.d/99-xray-installer-bbr.conf <<EOF
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 EOF
-    sysctl --system >/dev/null 2>&1 || sysctl -p /etc/sysctl.d/99-xray-installer-bbr.conf >/dev/null 2>&1 || true
+    then
+        return 1
+    fi
+    sysctl --system >/dev/null 2>&1 || sysctl -p /etc/sysctl.d/99-xray-installer-bbr.conf >/dev/null 2>&1
 }
 
 prepare_system() {
@@ -61,8 +64,11 @@ prepare_system() {
     [[ -n "${XRAY_ASSET:-}" ]] || detect_arch
     info "[系统] 环境: $OS_TYPE ($INIT_SYSTEM) / 架构: $ARCH / 资产: ${XRAY_ASSET:-未知}"
     install_dependencies || return 1
-    install_shortcut
-    enable_bbr
+    install_shortcut || {
+        err "[系统] 安装 ike 快捷命令失败。"
+        return 1
+    }
+    enable_bbr || info "[系统] BBR 启用失败，已继续安装 Xray。"
 }
 
 preflight_root() {
@@ -249,7 +255,7 @@ preflight_system() {
 validate_port() {
     local port="$1"
     [[ "$port" =~ ^[0-9]+$ ]] || return 1
-    ((port >= 1 && port <= 65535)) || return 1
+    ((10#$port >= 1 && 10#$port <= 65535)) || return 1
     return 0
 }
 
@@ -311,22 +317,37 @@ ask_port() {
 }
 
 detect_global_ipv6() {
+    local candidate
+
     if [[ ${XRAY_ONECLICK_TEST_GLOBAL_IPV6+x} ]]; then
-        printf '%s' "$XRAY_ONECLICK_TEST_GLOBAL_IPV6"
-        [[ -n "$XRAY_ONECLICK_TEST_GLOBAL_IPV6" ]]
+        candidate="$XRAY_ONECLICK_TEST_GLOBAL_IPV6"
+        [[ -n "$candidate" ]] || return 1
+        if declare -F is_public_ipv6 >/dev/null 2>&1; then
+            is_public_ipv6 "$candidate" || return 1
+        fi
+        printf '%s' "$candidate"
         return
     fi
     command -v ip >/dev/null 2>&1 || return 1
-    ip -o -6 addr show scope global 2>/dev/null |
+    while IFS= read -r candidate; do
+        [[ -n "$candidate" ]] || continue
+        if declare -F is_public_ipv6 >/dev/null 2>&1; then
+            is_public_ipv6 "$candidate" || continue
+        elif [[ "$candidate" != 2* && "$candidate" != 3* ]]; then
+            continue
+        fi
+        printf '%s' "$candidate"
+        return 0
+    done < <(ip -o -6 addr show scope global 2>/dev/null |
         awk '$0 !~ / tentative| dadfailed| deprecated/ {
           for (i = 1; i <= NF; i++) {
             if ($i == "inet6") {
               split($(i + 1), addr, "/")
               print addr[1]
-              exit
             }
           }
-        }'
+        }')
+    return 1
 }
 
 is_system_ipv6_disabled() {
@@ -436,7 +457,13 @@ random_free_port() {
 
     for ((attempt = 0; attempt < 200; attempt++)); do
         if command -v openssl >/dev/null 2>&1; then
-            rand=$((16#$(openssl rand -hex 2)))
+            local random_hex
+            random_hex="$(openssl rand -hex 2 2>/dev/null || true)"
+            if [[ "$random_hex" =~ ^[[:xdigit:]]{4}$ ]]; then
+                rand=$((16#$random_hex))
+            else
+                rand=$RANDOM
+            fi
         else
             rand=$RANDOM
         fi

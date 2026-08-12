@@ -4,7 +4,9 @@
 set -o pipefail
 
 IKE_INSTALLER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IKE_LIB_RAW_BASE="${IKE_LIB_RAW_BASE:-https://raw.githubusercontent.com/ike-sh/Xray-OneClick/main/lib}"
+IKE_REPOSITORY="${XRAY_ONECLICK_REPO:-ike-sh/Xray-OneClick}"
+IKE_REF="${XRAY_ONECLICK_REF:-main}"
+IKE_LIB_RAW_BASE="${IKE_LIB_RAW_BASE:-https://raw.githubusercontent.com/${IKE_REPOSITORY}/${IKE_REF}/lib}"
 IKE_LIB_MODULES=(
     "00-bootstrap.sh"
     "01-constants.sh"
@@ -45,11 +47,11 @@ IKE_LIB_MODULES=(
 ike_ensure_lib_modules() {
     local root_dir="$1"
     local lib_dir="${root_dir}/lib"
-    local module missing=()
+    local module tmp_module missing=()
 
     mkdir -p "$lib_dir" || return 1
     for module in "${IKE_LIB_MODULES[@]}"; do
-        [[ -f "${lib_dir}/${module}" ]] || missing+=("$module")
+        [[ -s "${lib_dir}/${module}" ]] || missing+=("$module")
     done
     [[ ${#missing[@]} -eq 0 ]] && return 0
 
@@ -60,11 +62,27 @@ ike_ensure_lib_modules() {
     fi
 
     for module in "${missing[@]}"; do
+        tmp_module="$(mktemp "${lib_dir}/.${module}.XXXXXX")" || return 1
         if command -v curl >/dev/null 2>&1; then
-            curl -fsSL "${IKE_LIB_RAW_BASE}/${module}" -o "${lib_dir}/${module}" || return 1
+            curl -fsSL "${IKE_LIB_RAW_BASE}/${module}" -o "$tmp_module" || {
+                rm -f "$tmp_module"
+                return 1
+            }
         else
-            wget -qO "${lib_dir}/${module}" "${IKE_LIB_RAW_BASE}/${module}" || return 1
+            wget -qO "$tmp_module" "${IKE_LIB_RAW_BASE}/${module}" || {
+                rm -f "$tmp_module"
+                return 1
+            }
         fi
+        if [[ ! -s "$tmp_module" ]] || ! bash -n "$tmp_module"; then
+            rm -f "$tmp_module"
+            echo "Xray-OneClick: 下载的模块无效: ${module}" >&2
+            return 1
+        fi
+        mv "$tmp_module" "${lib_dir}/${module}" || {
+            rm -f "$tmp_module"
+            return 1
+        }
     done
 }
 
@@ -153,29 +171,44 @@ main() {
             run_export_command "$@"
             ;;
         update)
+            shift
+            [[ $# -eq 0 ]] || {
+                err "[失败] update 不接受额外参数；如需选择版本请使用 ike xray upgrade。"
+                return 1
+            }
             update_xray_core
             ;;
         backup)
+            shift
+            [[ $# -eq 0 ]] || {
+                err "[失败] backup 不接受额外参数。"
+                return 1
+            }
             export_current_config_backup
             ;;
         endpoint)
-            run_endpoint_command "${2:-show}"
+            shift
+            run_endpoint_command "$@"
             ;;
         config)
-            run_config_command "${2:-path}"
+            shift
+            run_config_command "$@"
             ;;
         service)
             shift
             run_service_command "$@"
             ;;
         logs)
-            run_logs_command
+            shift
+            run_logs_command "$@"
             ;;
         cnblock)
-            run_cnblock_command "${2:-}"
+            shift
+            run_cnblock_command "$@"
             ;;
         safety)
-            run_safety_command "${2:-}" "${3:-}"
+            shift
+            run_safety_command "$@"
             ;;
         tunnel)
             shift
@@ -215,7 +248,8 @@ main() {
             run_advanced_profile_command "fullstack" "${2:-show}" "${@:3}"
             ;;
         bootstrap)
-            run_bootstrap_command
+            shift
+            run_bootstrap_command "$@"
             ;;
     esac
 }
@@ -223,8 +257,5 @@ main() {
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     main "$@"
 fi
-
-
-
 
 

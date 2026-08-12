@@ -45,9 +45,74 @@ detect_arch() {
 }
 
 ensure_config_security() {
-    mkdir -p "$CONFIG_DIR" "$ASSET_DIR"
-    chmod 700 "$CONFIG_DIR"
-    [[ -f "$CONFIG_FILE" ]] && chmod 600 "$CONFIG_FILE"
-    [[ -f "$STATE_FILE" ]] && chmod 600 "$STATE_FILE"
+    if ! mkdir -p "$CONFIG_DIR" "$ASSET_DIR"; then
+        err "[安全] 创建配置或资源目录失败。"
+        return 1
+    fi
+    if ! chmod 700 "$CONFIG_DIR"; then
+        err "[安全] 设置配置目录权限失败: $CONFIG_DIR"
+        return 1
+    fi
+    if [[ -f "$CONFIG_FILE" ]] && ! chmod 600 "$CONFIG_FILE"; then
+        err "[安全] 设置配置文件权限失败: $CONFIG_FILE"
+        return 1
+    fi
+    if [[ -f "$STATE_FILE" ]] && ! chmod 600 "$STATE_FILE"; then
+        err "[安全] 设置状态文件权限失败: $STATE_FILE"
+        return 1
+    fi
     chown root:root "$CONFIG_DIR" "$CONFIG_FILE" "$STATE_FILE" 2>/dev/null || true
+}
+
+config_temp_file() {
+    mktemp "${CONFIG_FILE}.tmp.XXXXXX"
+}
+
+state_temp_file() {
+    mktemp "${STATE_FILE}.tmp.XXXXXX"
+}
+
+validate_xray_binary_path() {
+    local target="${1:-}" segmented
+
+    segmented="/${target#/}/"
+    if [[ -z "$target" || "$target" != /* || "$target" =~ [[:space:]] ]]; then
+        err "[安全] Xray 二进制路径必须是不含空白的绝对路径: ${target:-空}"
+        return 1
+    fi
+    case "$segmented" in
+        */../* | */./*)
+            err "[安全] Xray 二进制路径不能包含路径跳转: $target"
+            return 1
+            ;;
+    esac
+    if [[ "${target##*/}" != "xray" ]]; then
+        err "[安全] 为防止误覆盖或误删，Xray 二进制文件名必须为 xray: $target"
+        return 1
+    fi
+}
+
+remove_managed_tree() {
+    local target="${1:-}" segmented
+
+    target="${target%/}"
+    segmented="/${target#/}/"
+    case "$segmented" in
+        */../* | */./*)
+            err "[安全] 拒绝删除包含路径跳转的目录: $target"
+            return 1
+            ;;
+    esac
+    case "$target" in
+        "" | / | /bin | /boot | /dev | /etc | /home | /lib | /lib64 | /opt | /proc | /root | /run | /sbin | /srv | /sys | /tmp | /usr | /usr/local | /var)
+            err "[安全] 拒绝删除过宽目录: ${target:-空}"
+            return 1
+            ;;
+        /*) ;;
+        *)
+            err "[安全] 拒绝删除非绝对目录: $target"
+            return 1
+            ;;
+    esac
+    rm -rf -- "$target"
 }

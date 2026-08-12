@@ -724,6 +724,10 @@ list_forward_rules() {
         return 0
     fi
 
+    if [[ -z "$(endpoint_custom_value)" ]]; then
+        get_public_addresses
+    fi
+
     mapfile -t rules < <(forward_all_lines)
     if [[ ${#rules[@]} -eq 0 ]]; then
         info "[端口转发] 当前未配置转发规则。"
@@ -745,17 +749,19 @@ list_forward_rules() {
 }
 
 state_sync_forward_rule() {
-    local tmp port_map_json
+    local tmp port_map_json replaced_tag
 
-    init_state
+    init_state || return 1
+    replaced_tag="${1:-${FORWARD_TAG}}"
     port_map_json="${FORWARD_PORT_MAP_JSON:-}"
     [[ -n "$port_map_json" ]] || port_map_json="{}"
-    tmp="$(mktemp)" || {
+    tmp="$(state_temp_file)" || {
         err "[失败] [端口转发] 创建状态临时文件失败。"
         return 1
     }
 
     if ! jq --arg tag "$FORWARD_TAG" \
+        --arg replaced_tag "$replaced_tag" \
         --arg listen "$FORWARD_LISTEN" \
         --arg listen_port "$FORWARD_LISTEN_PORT" \
         --arg target "$FORWARD_TARGET" \
@@ -781,9 +787,9 @@ state_sync_forward_rule() {
           "enabled": ($enabled == "true"),
           "remark": $remark
         } + (if $type == "portMap" then {"port_map": $port_map} else {} end);
-        .tunnels = ((.tunnels // []) | map(select(.tag != $tag))) |
+        .tunnels = ((.tunnels // []) | map(select(.tag != $tag and .tag != $replaced_tag))) |
         .tunnels += [tunnel_record] |
-        .forwards = ((.forwards // []) | map(select(.tag != $tag))) |
+        .forwards = ((.forwards // []) | map(select(.tag != $tag and .tag != $replaced_tag))) |
         .forwards += [tunnel_record]
       ' "$STATE_FILE" >"$tmp"; then
         rm -f "$tmp"
@@ -796,7 +802,7 @@ state_sync_forward_rule() {
         err "[失败] [端口转发] 更新状态文件失败。"
         return 1
     fi
-    ensure_config_security
+    ensure_config_security || return 1
 }
 
 state_delete_forward_rule() {
@@ -804,7 +810,7 @@ state_delete_forward_rule() {
     local tmp
 
     [[ -f "$STATE_FILE" ]] || return 0
-    tmp="$(mktemp)" || {
+    tmp="$(state_temp_file)" || {
         err "[失败] [端口转发] 创建状态临时文件失败。"
         return 1
     }
@@ -823,7 +829,7 @@ state_delete_forward_rule() {
         err "[失败] [端口转发] 更新状态文件失败。"
         return 1
     fi
-    ensure_config_security
+    ensure_config_security || return 1
 }
 
 configure_forward_rule() {
@@ -945,7 +951,7 @@ remove_forward_config_by_tag() {
 
     [[ -f "$CONFIG_FILE" ]] || return 0
 
-    tmp="$(mktemp)" || {
+    tmp="$(config_temp_file)" || {
         err "[失败] [端口转发] 创建临时文件失败。"
         return 1
     }
@@ -982,7 +988,7 @@ write_forward_config_from_vars() {
     FORWARD_ENABLED="${FORWARD_ENABLED:-true}"
     port_map_json="${FORWARD_PORT_MAP_JSON:-}"
     [[ -n "$port_map_json" ]] || port_map_json="{}"
-    tmp="$(mktemp)" || {
+    tmp="$(config_temp_file)" || {
         err "[失败] [端口转发] 创建临时文件失败。"
         return 1
     }
@@ -1090,7 +1096,10 @@ install_forward_rule() {
         return 1
     fi
 
-    state_sync_forward_rule || err "[状态] 转发状态记录失败，但 config.json 已生效。"
+    if ! state_sync_forward_rule; then
+        rollback_config_after_state_failure "端口转发"
+        return 1
+    fi
     state_set_meta_action "添加端口转发" || err "[状态] 最近变更记录失败。"
     ok "[完成] 端口转发已添加: ${FORWARD_TAG}"
 }
@@ -1102,7 +1111,7 @@ delete_forward_rule() {
     selected_tag="$SELECTED_FORWARD_TAG"
 
     if ! forward_config_has_tag "$selected_tag"; then
-        state_delete_forward_rule "$selected_tag" || err "[状态] 转发状态记录删除失败。"
+        state_delete_forward_rule "$selected_tag" || return 1
         state_set_meta_action "删除端口转发" || err "[状态] 最近变更记录失败。"
         ok "[完成] 已删除停用转发规则: ${selected_tag}"
         return 0
@@ -1120,7 +1129,10 @@ delete_forward_rule() {
         return 1
     fi
 
-    state_delete_forward_rule "$selected_tag" || err "[状态] 转发状态记录删除失败，但 config.json 已生效。"
+    if ! state_delete_forward_rule "$selected_tag"; then
+        rollback_config_after_state_failure "端口转发删除"
+        return 1
+    fi
     state_set_meta_action "删除端口转发" || err "[状态] 最近变更记录失败。"
     ok "[完成] 端口转发已删除: ${selected_tag}"
 }
@@ -1151,7 +1163,7 @@ set_forward_enabled() {
     fi
     if [[ "$enable" == "false" ]] && ! forward_config_has_tag "$FORWARD_TAG"; then
         FORWARD_ENABLED="false"
-        state_sync_forward_rule || err "[状态] 转发状态记录失败。"
+        state_sync_forward_rule || return 1
         info "[端口转发] 规则已停用: $FORWARD_TAG"
         return 0
     fi
@@ -1178,7 +1190,10 @@ set_forward_enabled() {
         return 1
     fi
 
-    state_sync_forward_rule || err "[状态] 转发状态记录失败，但 config.json 已生效。"
+    if ! state_sync_forward_rule; then
+        rollback_config_after_state_failure "${action}端口转发"
+        return 1
+    fi
     context="${action}端口转发"
     state_set_meta_action "$context" || err "[状态] 最近变更记录失败。"
     ok "[完成] ${context}: ${FORWARD_TAG}"
@@ -1288,10 +1303,10 @@ edit_forward_rule() {
         return 1
     fi
 
-    if [[ "$FORWARD_TAG" != "$old_tag" ]]; then
-        state_delete_forward_rule "$old_tag" || err "[状态] 旧转发状态删除失败，但 config.json 已生效。"
+    if ! state_sync_forward_rule "$old_tag"; then
+        rollback_config_after_state_failure "修改端口转发"
+        return 1
     fi
-    state_sync_forward_rule || err "[状态] 转发状态记录失败，但 config.json 已生效。"
     state_set_meta_action "修改端口转发" || err "[状态] 最近变更记录失败。"
     ok "[完成] 端口转发已修改: ${FORWARD_TAG}"
 }
@@ -1575,15 +1590,24 @@ doctor_tunnel_groups() {
 }
 
 export_forward_rules() {
-    local timestamp outfile
+    local timestamp outfile export_dir
 
+    FORWARD_EXPORTED_FILE=""
     command -v jq >/dev/null 2>&1 || {
         err "[失败] [端口转发] 缺少 jq，无法导出。"
         return 1
     }
 
     timestamp="$(date +%Y%m%d%H%M%S)"
-    outfile="${FORWARD_EXPORT_DIR:-/root}/xray-tunnels-${timestamp}.json"
+    export_dir="${FORWARD_EXPORT_DIR:-/root}"
+    mkdir -p "$export_dir" || {
+        err "[失败] [端口转发] 创建导出目录失败: $export_dir"
+        return 1
+    }
+    outfile="$(mktemp --suffix=.json "${export_dir}/xray-tunnels-${timestamp}.XXXXXX")" || {
+        err "[失败] [端口转发] 创建导出文件失败: $export_dir"
+        return 1
+    }
 
     if [[ -f "$STATE_FILE" ]] && jq -e '(((.tunnels // []) + (.forwards // [])) | length) > 0' "$STATE_FILE" >/dev/null 2>&1; then
         jq '{
@@ -1591,6 +1615,7 @@ export_forward_rules() {
           type: "xray-oneclick-tunnels",
           tunnels: ([((.tunnels // [])[]?), ((.forwards // [])[]?)] | unique_by(.tag))
         }' "$STATE_FILE" >"$outfile" || {
+            rm -f "$outfile"
             err "[失败] [端口转发] 导出 state 失败。"
             return 1
         }
@@ -1626,22 +1651,33 @@ export_forward_rules() {
             ]
           }
         ' "$CONFIG_FILE" >"$outfile" || {
+            rm -f "$outfile"
             err "[失败] [端口转发] 从 config.json 导出失败。"
             return 1
         }
     else
-        printf '{\n  "version": 1,\n  "type": "xray-oneclick-tunnels",\n  "tunnels": []\n}\n' >"$outfile"
+        if ! printf '{\n  "version": 1,\n  "type": "xray-oneclick-tunnels",\n  "tunnels": []\n}\n' >"$outfile"; then
+            rm -f "$outfile"
+            return 1
+        fi
     fi
 
-    chmod 600 "$outfile" 2>/dev/null || true
+    chmod 600 "$outfile" || {
+        rm -f "$outfile"
+        err "[失败] [端口转发] 无法保护导出文件权限。"
+        return 1
+    }
+    FORWARD_EXPORTED_FILE="$outfile"
     ok "[完成] Tunnel 规则已导出: $outfile"
 }
 
 generate_forward_template() {
-    local outfile
+    local outfile tmp
 
     outfile="${FORWARD_EXPORT_DIR:-/root}/xray-tunnels-template.json"
-    cat >"$outfile" <<'JSON'
+    mkdir -p "$(dirname "$outfile")" || return 1
+    tmp="$(mktemp "${outfile}.tmp.XXXXXX")" || return 1
+    if ! cat >"$tmp" <<'JSON'
 {
   "version": 1,
   "type": "xray-oneclick-tunnels",
@@ -1662,7 +1698,18 @@ generate_forward_template() {
   ]
 }
 JSON
-    chmod 600 "$outfile" 2>/dev/null || true
+    then
+        rm -f "$tmp"
+        return 1
+    fi
+    chmod 600 "$tmp" || {
+        rm -f "$tmp"
+        return 1
+    }
+    mv "$tmp" "$outfile" || {
+        rm -f "$tmp"
+        return 1
+    }
     ok "[完成] Tunnel 导入模板已生成: $outfile"
 }
 
@@ -1736,7 +1783,7 @@ resolve_tunnel_import_file() {
 
 import_forward_rules() {
     local import_file="${1:-}" tmp_records line tag listen listen_port target target_port network mode remark enabled choice imported new_tag type group port_map
-    local assume_yes="false" arg
+    local assume_yes="false" arg state_snapshot
     local import_lines=()
 
     shift || true
@@ -1879,7 +1926,6 @@ import_forward_rules() {
             case "${choice:-1}" in
                 2)
                     remove_forward_config_by_tag "$FORWARD_TAG" || return 1
-                    state_delete_forward_rule "$FORWARD_TAG" || err "[状态] 覆盖导入时删除旧状态记录失败，将继续写入新记录。"
                     ;;
                 3)
                     new_tag="$(generate_unique_forward_tag_from_base "$FORWARD_TAG")" || return 1
@@ -1910,10 +1956,21 @@ import_forward_rules() {
         return 1
     fi
 
+    state_snapshot="$(create_state_snapshot)" || {
+        rm -f "$tmp_records"
+        rollback_config_after_state_failure "Tunnel 批量导入"
+        return 1
+    }
+
     while IFS=$'\037' read -r FORWARD_TAG FORWARD_TYPE FORWARD_GROUP FORWARD_LISTEN FORWARD_LISTEN_PORT FORWARD_TARGET FORWARD_TARGET_PORT FORWARD_NETWORK FORWARD_MODE FORWARD_REMARK FORWARD_ENABLED FORWARD_PORT_MAP_JSON; do
-        state_sync_forward_rule || err "[状态] 转发状态记录失败，但 config.json 已生效。"
+        if ! state_sync_forward_rule; then
+            restore_state_snapshot "$state_snapshot" || true
+            rm -f "$state_snapshot" "$tmp_records"
+            rollback_config_after_state_failure "Tunnel 批量导入"
+            return 1
+        fi
     done <"$tmp_records"
-    rm -f "$tmp_records"
+    rm -f "$state_snapshot" "$tmp_records"
 
     state_set_meta_action "导入端口转发" || err "[状态] 最近变更记录失败。"
     ok "[完成] 已导入 ${imported} 条转发规则。"
@@ -1923,8 +1980,8 @@ export_tunnel_bundle() {
     local timestamp bundle_dir old_export_dir exported_file
 
     timestamp="$(date +%Y%m%d%H%M%S)"
-    bundle_dir="${TUNNEL_BUNDLE_EXPORT_DIR:-/root}/xray-tunnel-bundle-${timestamp}"
-    mkdir -p "$bundle_dir" || {
+    mkdir -p "${TUNNEL_BUNDLE_EXPORT_DIR:-/root}" || return 1
+    bundle_dir="$(mktemp -d "${TUNNEL_BUNDLE_EXPORT_DIR:-/root}/xray-tunnel-bundle-${timestamp}.XXXXXX")" || {
         err "[失败] [Tunnel] 创建部署包目录失败: $bundle_dir"
         return 1
     }
@@ -1933,19 +1990,27 @@ export_tunnel_bundle() {
     FORWARD_EXPORT_DIR="$bundle_dir"
     export_forward_rules >/dev/null || {
         FORWARD_EXPORT_DIR="$old_export_dir"
+        remove_managed_tree "$bundle_dir" >/dev/null 2>&1 || true
         return 1
     }
     FORWARD_EXPORT_DIR="$old_export_dir"
 
-    exported_file="$(find "$bundle_dir" -maxdepth 1 -type f -name 'xray-tunnels-*.json' | head -n 1)"
+    exported_file="${FORWARD_EXPORTED_FILE:-}"
     [[ -n "$exported_file" ]] || {
         err "[失败] [Tunnel] 未找到导出的 tunnels.json。"
+        remove_managed_tree "$bundle_dir" >/dev/null 2>&1 || true
         return 1
     }
-    mv "$exported_file" "$bundle_dir/tunnels.json"
-    chmod 600 "$bundle_dir/tunnels.json" 2>/dev/null || true
+    mv "$exported_file" "$bundle_dir/tunnels.json" || {
+        remove_managed_tree "$bundle_dir" >/dev/null 2>&1 || true
+        return 1
+    }
+    chmod 600 "$bundle_dir/tunnels.json" || {
+        remove_managed_tree "$bundle_dir" >/dev/null 2>&1 || true
+        return 1
+    }
 
-    cat >"$bundle_dir/README.txt" <<EOF
+    if ! cat >"$bundle_dir/README.txt" <<EOF
 Xray-OneClick Tunnel 部署包
 
 本目录包含:
@@ -1967,8 +2032,12 @@ ike tunnel bundle import /root/xray-tunnel-bundle-YYYYmmddHHMMSS --yes
 - --yes 遇到 tag 冲突时会自动改名。
 - 导入不会覆盖非 Tunnel 协议入站。
 EOF
+    then
+        remove_managed_tree "$bundle_dir" >/dev/null 2>&1 || true
+        return 1
+    fi
 
-    cat >"$bundle_dir/install-tunnels.sh" <<'EOF'
+    if ! cat >"$bundle_dir/install-tunnels.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -1980,7 +2049,18 @@ curl -fsSL "$SCRIPT_URL" -o "$SCRIPT_PATH"
 XRAY_ONECLICK_YES=1 bash "$SCRIPT_PATH" bootstrap
 bash "$SCRIPT_PATH" tunnel bundle import "$BUNDLE_DIR" --yes
 EOF
-    chmod +x "$bundle_dir/install-tunnels.sh"
+    then
+        remove_managed_tree "$bundle_dir" >/dev/null 2>&1 || true
+        return 1
+    fi
+    chmod 600 "$bundle_dir/README.txt" || {
+        remove_managed_tree "$bundle_dir" >/dev/null 2>&1 || true
+        return 1
+    }
+    chmod 700 "$bundle_dir/install-tunnels.sh" || {
+        remove_managed_tree "$bundle_dir" >/dev/null 2>&1 || true
+        return 1
+    }
 
     ok "[完成] Tunnel 部署包已导出: $bundle_dir"
     ok "[部署包] tunnels.json: $bundle_dir/tunnels.json"
@@ -2098,7 +2178,7 @@ configure_tunnel_portmap_rule() {
 }
 
 install_tunnel_portmap_rule() {
-    local tmp_records line local_port value target target_port
+    local tmp_records line local_port value target target_port state_snapshot
 
     FORWARD_TYPE="portMap"
     FORWARD_ENABLED="true"
@@ -2113,7 +2193,10 @@ install_tunnel_portmap_rule() {
     write_forward_config_from_vars || return 1
 
     if apply_config "Tunnel portMap"; then
-        state_sync_forward_rule || err "[状态] Tunnel 状态记录失败，但 config.json 已生效。"
+        if ! state_sync_forward_rule; then
+            rollback_config_after_state_failure "Tunnel portMap"
+            return 1
+        fi
         state_set_meta_action "添加 Tunnel portMap" || err "[状态] 最近变更记录失败。"
         ok "[完成] Tunnel portMap 已添加: ${FORWARD_TAG}"
         return 0
@@ -2149,10 +2232,21 @@ install_tunnel_portmap_rule() {
         return 1
     fi
 
+    state_snapshot="$(create_state_snapshot)" || {
+        rm -f "$tmp_records"
+        rollback_config_after_state_failure "Tunnel portMap fallback"
+        return 1
+    }
+
     while IFS=$'\037' read -r FORWARD_TAG FORWARD_TYPE FORWARD_GROUP FORWARD_LISTEN FORWARD_LISTEN_PORT FORWARD_TARGET FORWARD_TARGET_PORT FORWARD_NETWORK FORWARD_MODE FORWARD_REMARK FORWARD_ENABLED FORWARD_PORT_MAP_JSON; do
-        state_sync_forward_rule || err "[状态] Tunnel fallback 状态记录失败，但 config.json 已生效。"
+        if ! state_sync_forward_rule; then
+            restore_state_snapshot "$state_snapshot" || true
+            rm -f "$state_snapshot" "$tmp_records"
+            rollback_config_after_state_failure "Tunnel portMap fallback"
+            return 1
+        fi
     done <"$tmp_records"
-    rm -f "$tmp_records"
+    rm -f "$state_snapshot" "$tmp_records"
     state_set_meta_action "添加 Tunnel portMap fallback" || err "[状态] 最近变更记录失败。"
     ok "[完成] portMap 已回退为多条 single Tunnel。"
 }
@@ -2283,6 +2377,10 @@ configure_forward_menu() {
 run_bootstrap_command() {
     local import_file import_args=()
 
+    [[ $# -eq 0 ]] || {
+        err "[失败] bootstrap 不接受额外参数；Tunnel 导入请使用 XRAY_ONECLICK_TUNNEL_IMPORT。"
+        return 1
+    }
     prepare_system || {
         err "[失败] Bootstrap 系统准备失败。"
         return 1

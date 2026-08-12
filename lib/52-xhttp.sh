@@ -513,7 +513,7 @@ build_vless_xhttp_finalmask_share_link() {
 }
 
 state_set_vless_xhttp_finalmask() {
-    init_state
+    init_state || return 1
     local tmp link timestamp finalmask_json
     local finalmask_mode finalmask_preset finalmask_summary
 
@@ -533,8 +533,8 @@ state_set_vless_xhttp_finalmask() {
         fi
     fi
 
-    tmp="$(mktemp)" || return 1
-    MSYS2_ENV_CONV_EXCL="XHTTP_JQ_VALUE" XHTTP_JQ_VALUE="$XHTTP_PATH" jq --arg port "$XHTTP_PORT" \
+    tmp="$(state_temp_file)" || return 1
+    if ! MSYS2_ENV_CONV_EXCL="XHTTP_JQ_VALUE" XHTTP_JQ_VALUE="$XHTTP_PATH" jq --arg port "$XHTTP_PORT" \
         --arg uuid "$VLESS_UUID" \
         --arg decryption "$VLESS_DECRYPTION" \
         --arg encryption "$VLESS_ENCRYPTION" \
@@ -569,9 +569,17 @@ state_set_vless_xhttp_finalmask() {
           "created_at": $created_at,
           "link": $link
         }
-       ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
-    rm -f "$tmp"
-    ensure_config_security
+       ' "$STATE_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        err "[状态] 生成 XHTTP-FinalMask 状态失败。"
+        return 1
+    fi
+    if ! mv "$tmp" "$STATE_FILE"; then
+        rm -f "$tmp"
+        err "[状态] 写入 XHTTP-FinalMask 状态失败。"
+        return 1
+    fi
+    ensure_config_security || return 1
 }
 
 print_xhttp_dry_run() {
@@ -617,7 +625,7 @@ install_vless_xhttp_finalmask() {
     finalmask_json="null"
     [[ "$XHTTP_FINALMASK_ENABLED" == "true" ]] && finalmask_json="$XHTTP_FINALMASK_JSON"
 
-    tmp="$(mktemp)" || return 1
+    tmp="$(config_temp_file)" || return 1
     if ! MSYS2_ENV_CONV_EXCL="XHTTP_JQ_VALUE" XHTTP_JQ_VALUE="$XHTTP_PATH" jq --arg tag "$VLESS_XHTTP_FM_TAG" \
         --arg port "$XHTTP_PORT" \
         --arg uuid "$VLESS_UUID" \
@@ -688,7 +696,10 @@ install_vless_xhttp_finalmask() {
         print_xhttp_failure_hint
         return 1
     fi
-    state_set_vless_xhttp_finalmask || err "[状态] XHTTP-FinalMask 状态写入失败，但 config.json 已生效。"
+    if ! state_set_vless_xhttp_finalmask; then
+        rollback_config_after_state_failure "XHTTP-FinalMask"
+        return 1
+    fi
     state_set_meta_action "安装 VLESS Encryption + XHTTP + FinalMask" || err "[状态] 最近变更记录失败。"
     ok "[完成] VLESS Encryption + XHTTP + FinalMask 已写入 Xray 配置。"
     print_vless_xhttp_finalmask_result
@@ -781,7 +792,7 @@ remove_vless_xhttp_finalmask_config() {
 
     [[ -f "$CONFIG_FILE" ]] || {
         info "[XHTTP] 未找到配置文件，视为未安装。"
-        state_delete_key "$VLESS_XHTTP_FM_STATE_KEY" 2>/dev/null || true
+        state_delete_key "$VLESS_XHTTP_FM_STATE_KEY" || return 1
         return 0
     }
     backup_config || {
@@ -789,7 +800,7 @@ remove_vless_xhttp_finalmask_config() {
         return 1
     }
 
-    tmp="$(mktemp)" || return 1
+    tmp="$(config_temp_file)" || return 1
     if ! jq --arg tag "$VLESS_XHTTP_FM_TAG" '
         .inbounds = ((.inbounds // []) | map(select(.tag != $tag)))
        ' "$CONFIG_FILE" >"$tmp"; then
@@ -803,7 +814,10 @@ remove_vless_xhttp_finalmask_config() {
         return 1
     }
     apply_config "VLESS XHTTP-FinalMask 删除" || return 1
-    state_delete_key "$VLESS_XHTTP_FM_STATE_KEY"
+    if ! state_delete_key "$VLESS_XHTTP_FM_STATE_KEY"; then
+        rollback_config_after_state_failure "VLESS XHTTP-FinalMask 删除"
+        return 1
+    fi
     state_set_meta_action "删除 VLESS Encryption + XHTTP + FinalMask" || err "[状态] 最近变更记录失败。"
     ok "[完成] VLESS Encryption + XHTTP + FinalMask 已删除。"
 }
@@ -897,12 +911,12 @@ build_vless_enc_xhttp_share_link() {
 }
 
 state_set_vless_enc_xhttp() {
-    init_state
+    init_state || return 1
     local tmp link timestamp
     link="$(build_vless_enc_xhttp_share_link || true)"
     timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    tmp="$(mktemp)"
-    jq --arg key "$VLESS_ENC_XHTTP_STATE_KEY" \
+    tmp="$(state_temp_file)" || return 1
+    if ! jq --arg key "$VLESS_ENC_XHTTP_STATE_KEY" \
         --arg tag "$VLESS_ENC_XHTTP_TAG" \
         --arg uuid "$VLESS_UUID" \
         --arg encryption "$VLESS_ENCRYPTION" \
@@ -930,9 +944,17 @@ state_set_vless_enc_xhttp() {
           "listen_scope": $listen_scope,
           "updated_at": $updated
         }
-       ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
-    rm -f "$tmp"
-    ensure_config_security
+       ' "$STATE_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        err "[状态] 生成 ENC-XHTTP 状态失败。"
+        return 1
+    fi
+    if ! mv "$tmp" "$STATE_FILE"; then
+        rm -f "$tmp"
+        err "[状态] 写入 ENC-XHTTP 状态失败。"
+        return 1
+    fi
+    ensure_config_security || return 1
 }
 
 install_vless_enc_xhttp() {
@@ -951,7 +973,7 @@ install_vless_enc_xhttp() {
         }
     fi
 
-    tmp="$(mktemp)" || return 1
+    tmp="$(config_temp_file)" || return 1
     if ! MSYS2_ENV_CONV_EXCL="ENC_XHTTP_JQ_PATH" ENC_XHTTP_JQ_PATH="$ENC_XHTTP_PATH" jq --arg tag "$VLESS_ENC_XHTTP_TAG" \
         --arg listen "${ENC_XHTTP_LISTEN:-0.0.0.0}" \
         --arg port "$ENC_XHTTP_PORT" \
@@ -1013,7 +1035,10 @@ install_vless_enc_xhttp() {
         print_xhttp_failure_hint
         return 1
     fi
-    state_set_vless_enc_xhttp || err "[状态] ENC-XHTTP 状态写入失败，但 config.json 已生效。"
+    if ! state_set_vless_enc_xhttp; then
+        rollback_config_after_state_failure "ENC-XHTTP"
+        return 1
+    fi
     state_set_meta_action "安装 VLESS Encryption + XHTTP" || err "[状态] 最近变更记录失败。"
     ok "[完成] VLESS Encryption + XHTTP 已写入 Xray 配置。"
     print_vless_enc_xhttp_result

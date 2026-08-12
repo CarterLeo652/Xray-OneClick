@@ -87,7 +87,17 @@ fi
 
 if [ "$(id -u)" -eq 0 ]; then
     ensure_bash
-    exec bash "$tmp" "$@"
+    bash -n "$tmp" || errx "下载的 install.sh 语法校验失败。"
+    IKE_LIB_RAW_BASE="https://raw.githubusercontent.com/${REPO}/${REF}/lib"
+    XRAY_ONECLICK_REPO="$REPO"
+    XRAY_ONECLICK_REF="$REF"
+    export IKE_LIB_RAW_BASE XRAY_ONECLICK_REPO XRAY_ONECLICK_REF
+    bash "$tmp" "$@"
+    exit $?
+fi
+
+if command -v bash >/dev/null 2>&1; then
+    bash -n "$tmp" || errx "下载的 install.sh 语法校验失败。"
 fi
 
 # 非 root：不强依赖 sudo（Alpine 默认无 sudo），仅下载到当前目录并给出提示
@@ -95,9 +105,9 @@ log "非 root：仅下载 install.sh 到当前目录"
 install -m 0755 "$tmp" ./install.sh 2>/dev/null || { cp "$tmp" ./install.sh && chmod 0755 ./install.sh; }
 echo "[OK] 已保存 ./install.sh（${remote_ver:-未知版本}）"
 if command -v sudo >/dev/null 2>&1; then
-    echo "请以 root 运行：sudo bash install.sh"
+    echo "请以 root 运行：sudo XRAY_ONECLICK_REPO='$REPO' XRAY_ONECLICK_REF='$REF' bash install.sh"
 elif command -v doas >/dev/null 2>&1; then
-    echo "请以 root 运行：doas bash install.sh"
+    echo "请以 root 运行：doas env XRAY_ONECLICK_REPO='$REPO' XRAY_ONECLICK_REF='$REF' bash install.sh"
 else
-    echo "请切换到 root 后运行：bash install.sh"
+    echo "请切换到 root 后运行：XRAY_ONECLICK_REPO='$REPO' XRAY_ONECLICK_REF='$REF' bash install.sh"
 fi

@@ -4,9 +4,11 @@ Xray-OneClick 是基于 **Xray-core** 的多协议一键部署脚本，适合在
 
 脚本支持 Shadowsocks 2022、VLESS Encryption、VLESS TCP REALITY、VLESS Encryption + XHTTP + FinalMask、VLESS Encryption + XHTTP、VLESS Encryption + FinalMask（sudoku）、SOCKS5、Hysteria2，以及高级协议组合与 Tunnel 中转管理。默认带基础安全屏蔽、配置备份、服务诊断、配置导出、Xray-core 升级和安全卸载能力，并提供 stable / prerelease 两条 Xray-core 通道。
 
-当前版本：**1.1.21**（与 `VERSION` / `ike version` 一致）
+当前版本：**1.1.22**（与 `VERSION` / `ike version` 一致）
 
 状态：正式版
+
+本次版本：1.1.22 完成全量逻辑审计，移除全部历史 `sb` / sing-box 遗留，修复公网 Endpoint 探测与配置事务回滚，并为所有 REALITY 配置显式加入 `"minClientVer": "0.0.0"`；已通过无缓存 Docker 全量测试。
 
 说明：1.1.21 为健壮性补丁：SOCKS5 安装/状态写入由 `jq … && mv` 改为严谨写法（jq 失败即报错回滚，不再静默误报成功）；修复 CLI 取值类 `--flag` 置于命令末尾且缺省值时 `shift 2` 导致的参数解析死循环（改为 `shift; shift`，缺值时回落到交互/默认值）；并完成全仓逐文件 BUG 走查。1.1.20 修复了一个会导致 **Alpine 安装直接失败的关键 BUG**：`detect_arch` 之前在 Alpine 上拼接 `-musl` 后缀去下载 `Xray-linux-64-musl.zip`，但官方 XTLS/Xray-core 根本不发布 `-musl` 包（Linux 构建为 `CGO_ENABLED=0` 静态 Go 二进制，在 musl/glibc 上均可直接运行），导致 Alpine 下载不到资产而安装失败；现统一使用官方标准包（如 `Xray-linux-64.zip`）。1.1.19 将引导脚本改为 POSIX `sh`（Alpine 自动 `apk add bash`）、放行 `preflight` 更多架构、OpenRC `need net` 改 `use net`。版本来源：官方 XTLS/Xray-core，默认安装 `latest`（当前 v26.3.27）；VLESS Encryption / FinalMask(sudoku) / Hysteria2 等高级特性需 Xray-core v26+。普通 VLESS TCP REALITY 默认使用 `xtls-rprx-vision`；高级 Reality 组合默认不启用 Vision flow，可按需用 `--flow vision` 试验开启。
 
@@ -87,7 +89,7 @@ bash /root/install.sh
 
 仅下载 `install.sh` 单文件时，脚本会在首次运行期间从 GitHub 自动拉取缺失的 `lib/*.sh` 模块（需 `curl` 或 `wget`）。完整 Git 克隆则自带全部模块，适合离线或开发调试。
 
-安装时会将 `install.sh` 与 `lib/` 同步到 `/usr/local/share/ike/`，并创建 `ike` / `sb` 快捷命令。
+安装时会将 `install.sh` 与 `lib/` 同步到 `/usr/local/share/ike/`，并创建 `ike` 快捷命令。
 
 安装完成后可直接运行：
 
@@ -215,6 +217,15 @@ bash tests/test_config_generation.sh
 
 测试会覆盖普通 Reality、XHTTP FinalMask on/off、高级 Reality 组合、FullStack 和 `--fallback-limit conservative`。如果环境中存在 `xray`，测试会自动执行 `xray run -test -config <config>`；没有 `xray` 时会明确输出 skip 原因。
 
+推荐通过项目自带的 Docker 测试镜像执行完整检查：
+
+```bash
+docker build --no-cache -f Dockerfile.test -t xray-oneclick-test .
+docker run --rm xray-oneclick-test
+```
+
+镜像会执行模块完整性、版本一致性、Bash 语法、warning 级 ShellCheck、CLI、失败回滚回归测试，以及使用固定版本 Xray 对全部离线配置运行 `xray run -test`。
+
 `ike view` 和 `ike export clients` 会输出客户端连接信息，不要公开分享完整输出。
 
 ## Shadowsocks 2022
@@ -298,6 +309,8 @@ Reality 使用 `xray x25519` 生成密钥。新版 Xray 可能输出 `PrivateKey
 ## Vision flow 说明
 
 普通 VLESS TCP REALITY 默认使用 `xtls-rprx-vision`，这是主力 Reality 的推荐配置。脚本会同时把 flow 写入服务端 `clients[0].flow`、客户端分享链接和 state，避免出现链接与服务端配置不一致。
+
+脚本生成的所有 REALITY 入站都会显式写入 `"minClientVer": "0.0.0"`，避免新版 Xray-core 的默认最低客户端版本限制拒绝旧客户端。Xray-core 会对放宽该限制输出风险警告；这是兼容性优先的项目默认值。
 
 高级 Reality 组合默认不启用 Vision flow：
 
@@ -586,6 +599,8 @@ ike forward add
 
 Endpoint 用于控制分享链接里的地址，适合 NAT、DDNS、小鸡端口映射和多公网 IP 场景。
 
+未设置自定义 Endpoint 时，分享链接会自动探测公网地址。探测会绕过代理环境并过滤私网、回环、链路本地、文档保留地址；没有可验证的公网地址时不会使用 `hostname -I` 的内网地址兜底，请通过 `ike endpoint set` 明确设置公网 IP、DDNS 域名或 NAT 映射入口。只有本机存在全局公网 IPv6 时才会执行 IPv6 外网探测。
+
 ```bash
 ike endpoint show
 ike endpoint set
@@ -675,7 +690,7 @@ ike export clients --output /root/xray-clients.txt
 ike export report --output /root/xray-report.txt
 ```
 
-导出文件会尝试设置为 `600` 权限。`export report` 会脱敏 `privateKey`、`decryption`、password、token、secret 等敏感字段；`export clients` 只输出客户端需要的链接和参数。
+导出文件会尝试设置为 `600` 权限。`export report` 不输出客户端链接，并会脱敏 `privateKey`、`decryption`、password、token、secret、UUID、auth、shortIds 等认证字段；`export clients` 才会输出客户端需要的链接和参数。
 
 ## Xray-core 管理
 
@@ -710,7 +725,7 @@ XRAY_CHANNEL=prerelease ike xray upgrade
 ike xray upgrade --restart
 ```
 
-升级失败时脚本会尝试回滚旧二进制，不会自动修改现有协议配置。
+升级失败时脚本会尝试回滚旧二进制，不会自动修改现有协议配置。下载 Xray 资产后会优先使用 GitHub release API 提供的 `sha256:` digest 校验文件；旧 release 没有 digest 时会明确输出跳过提示。
 
 ## 服务管理（systemd / OpenRC）
 
@@ -747,7 +762,6 @@ OpenRC 日志默认写入 `/var/log/xray/access.log` 与 `error.log`（`ike logs
 | systemd 服务 | `/etc/systemd/system/xray.service` |
 | OpenRC 服务 | `/etc/init.d/xray` |
 | 主快捷命令 | `/usr/local/bin/ike` |
-| 兼容快捷命令 | `/usr/local/bin/sb` |
 
 `installer-state.json` 保存客户端链接所需字段和最近变更信息，应像配置文件一样保护。
 
@@ -759,7 +773,7 @@ OpenRC 日志默认写入 `/var/log/xray/access.log` 与 `error.log`（`ike logs
 | --- | --- |
 | `00-bootstrap` | 按序加载全部模块 |
 | `01-constants` / `02-output` | 全局常量、终端输出、`env_truthy` |
-| `03-installer` | `ike`/`sb` 快捷命令与 `lib/` 自部署 |
+| `03-installer` | `ike` 快捷命令与 `lib/` 自部署 |
 | `03-system` | 依赖安装、BBR、预检、`ask_port`、UUID/端口工具 |
 | `20-paths` / `21-config-base` / `22-state` | root/OS/架构检测、配置读写、`installer-state.json` |
 | `30-xray-core` / `31-service` | Xray 下载升级、systemd/openrc |
@@ -813,8 +827,7 @@ ike migrate
 10) 删除 SOCKS5 配置
 11) 删除 Hysteria2 配置
 12) 卸载全部 Xray
-13) 清理旧 sing-box 残留
-14) 返回主菜单
+13) 返回主菜单
 ```
 
 保留配置卸载：

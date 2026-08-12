@@ -6,6 +6,10 @@
 
 
 run_preflight_command() {
+    [[ $# -eq 0 ]] || {
+        err "[失败] preflight 不接受额外参数。"
+        return 1
+    }
     check_os
     detect_arch
     preflight_system
@@ -77,7 +81,7 @@ run_xray_command() {
         *)
             err "[失败] 未知 xray 命令: $action"
             show_xray_usage
-
+            return 1
             ;;
     esac
 }
@@ -86,12 +90,43 @@ backup_before_migration() {
     local timestamp backup_dir
 
     timestamp="$(date +%Y%m%d%H%M%S)"
-    backup_dir="${CONFIG_DIR}/migration-backup-${timestamp}"
-    mkdir -p "$backup_dir"
-    [[ -f "$CONFIG_FILE" ]] && cp -a "$CONFIG_FILE" "$backup_dir/config.json"
+    mkdir -p "$CONFIG_DIR" || return 1
+    backup_dir="$(mktemp -d "${CONFIG_DIR}/migration-backup-${timestamp}.XXXXXX")" || return 1
+    MIGRATION_BACKUP_DIR="$backup_dir"
+    MIGRATION_HAD_CONFIG="false"
+    MIGRATION_HAD_STATE="false"
+    if [[ -f "$CONFIG_FILE" ]] && ! cp -a "$CONFIG_FILE" "$backup_dir/config.json"; then
+        return 1
+    elif [[ -f "$CONFIG_FILE" ]]; then
+        MIGRATION_HAD_CONFIG="true"
+    fi
+    if [[ -f "$STATE_FILE" ]] && ! cp -a "$STATE_FILE" "$backup_dir/installer-state.json"; then
+        return 1
+    elif [[ -f "$STATE_FILE" ]]; then
+        MIGRATION_HAD_STATE="true"
+    fi
 
     chmod 700 "$backup_dir" 2>/dev/null || true
     info "[迁移] 已备份到: $backup_dir"
+}
+
+restore_migration_backup() {
+    local backup_dir="${MIGRATION_BACKUP_DIR:-}"
+    local restored="true"
+
+    [[ -n "$backup_dir" && -d "$backup_dir" ]] || return 1
+    if [[ "${MIGRATION_HAD_CONFIG:-false}" == "true" ]]; then
+        cp -a "$backup_dir/config.json" "$CONFIG_FILE" || restored="false"
+    else
+        rm -f "$CONFIG_FILE" || restored="false"
+    fi
+    if [[ "${MIGRATION_HAD_STATE:-false}" == "true" ]]; then
+        cp -a "$backup_dir/installer-state.json" "$STATE_FILE" || restored="false"
+    else
+        rm -f "$STATE_FILE" || restored="false"
+    fi
+    ensure_config_security || restored="false"
+    [[ "$restored" == "true" ]]
 }
 
 migrate_old_state() {
@@ -115,7 +150,7 @@ migrate_old_state() {
         }
         jq empty "$STATE_FILE" >/dev/null || return 1
     else
-        init_state
+        init_state || return 1
     fi
     old_reality_flow="$(jq -r ".${REALITY_STATE_KEY}.flow // empty" "$STATE_FILE" 2>/dev/null)"
     old_reality_link="$(jq -r ".${REALITY_STATE_KEY}.link // empty" "$STATE_FILE" 2>/dev/null)"
@@ -302,8 +337,8 @@ migrate_old_state() {
         return 0
     }
 
-    tmp="$(mktemp)" || return 1
-    jq --arg reality_flow "$inferred_reality_flow" \
+    tmp="$(state_temp_file)" || return 1
+    if ! jq --arg reality_flow "$inferred_reality_flow" \
         --arg reality_link "$reality_link" \
         --arg xhttp_enabled "${inferred_xhttp_enabled}" \
         --arg xhttp_link "$xhttp_link" \
@@ -374,8 +409,16 @@ migrate_old_state() {
           (if ((.[$fullstack_key].finalmask_preset // "") == "" and $fullstack_fm_preset != "") then .[$fullstack_key].finalmask_preset = $fullstack_fm_preset else . end) |
           (if ((.[$fullstack_key].finalmask_summary // "") == "" and $fullstack_fm_summary != "") then .[$fullstack_key].finalmask_summary = $fullstack_fm_summary else . end)
         else . end)
-      ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
-    rm -f "$tmp"
-    ensure_config_security
+      ' "$STATE_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        err "[迁移] 生成 state 兼容字段失败。"
+        return 1
+    fi
+    if ! mv "$tmp" "$STATE_FILE"; then
+        rm -f "$tmp"
+        err "[迁移] 写入 state 兼容字段失败。"
+        return 1
+    fi
+    ensure_config_security || return 1
     ok "[迁移] state 兼容字段已补齐。"
 }

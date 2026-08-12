@@ -4,6 +4,11 @@
 run_cnblock_command() {
     local mode="${1:-}"
 
+    [[ $# -le 1 ]] || {
+        err "[失败] cnblock 参数过多。"
+        return 1
+    }
+
     case "$mode" in
         "" | status)
             echo -e "中国大陆直连屏蔽: ${YELLOW}$(china_direct_block_status)${PLAIN}"
@@ -32,6 +37,11 @@ run_cnblock_command() {
 run_safety_command() {
     local scope="${1:-}"
     local action="${2:-}"
+
+    [[ $# -le 2 ]] || {
+        err "[失败] safety 参数过多。"
+        return 1
+    }
 
     if [[ "$scope" != "enhanced" ]]; then
         err "[失败] 未知 safety 参数: ${scope:-空}"
@@ -69,6 +79,11 @@ run_safety_command() {
 run_endpoint_command() {
     local action="${1:-show}"
 
+    [[ $# -le 1 ]] || {
+        err "[失败] endpoint 参数过多。"
+        return 1
+    }
+
     case "$action" in
         show | "")
             endpoint_show_command
@@ -94,6 +109,11 @@ run_config_command() {
     local action="${1:-path}"
     local editor_cmd restart_answer
 
+    [[ $# -le 1 ]] || {
+        err "[失败] config 参数过多。"
+        return 1
+    }
+
     case "$action" in
         path | "")
             echo "$CONFIG_FILE"
@@ -116,12 +136,13 @@ run_config_command() {
             }
             "$editor_cmd" "$CONFIG_FILE" || return 1
             validate_config_file || {
-                err "[失败] 配置校验未通过，已跳过重启。"
+                err "[失败] 配置校验未通过，正在恢复编辑前备份。"
+                restore_latest_config_backup >/dev/null 2>&1 || err "[回滚] 恢复编辑前配置失败。"
                 return 1
             }
             read -r -p "配置校验通过，是否重启 Xray? [y/N]: " restart_answer
             if [[ "$restart_answer" =~ ^[yY]$ ]]; then
-                restart_service
+                apply_config "配置编辑"
             else
                 info "[配置] 已跳过重启。"
             fi
@@ -167,7 +188,7 @@ run_service_command() {
             run_logs_command
             ;;
         repair)
-            ensure_xray_service "$assume_yes"
+            ensure_xray_service "$assume_yes" || return 1
             validate_config_file
             ;;
         *)
@@ -179,6 +200,10 @@ run_service_command() {
 }
 
 run_logs_command() {
+    [[ $# -eq 0 ]] || {
+        err "[失败] logs 不接受额外参数。"
+        return 1
+    }
     if [[ "$INIT_SYSTEM" == "systemd" ]] && command -v journalctl >/dev/null 2>&1; then
         journalctl -u "$SERVICE_NAME" -n 80 --no-pager 2>&1 | redact_sensitive_stream
         return "${PIPESTATUS[0]}"

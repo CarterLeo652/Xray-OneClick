@@ -64,12 +64,17 @@ advanced_profile_has_fallback_limit() {
 random_limit_number() {
     local min="$1"
     local max="$2"
-    local span rand
+    local span rand random_hex
 
     ((min <= max)) || return 1
     span=$((max - min + 1))
     if command -v openssl >/dev/null 2>&1; then
-        rand=$((16#$(openssl rand -hex 4)))
+        random_hex="$(openssl rand -hex 4 2>/dev/null || true)"
+        if [[ "$random_hex" =~ ^[[:xdigit:]]{8}$ ]]; then
+            rand=$((16#$random_hex))
+        else
+            rand=$RANDOM
+        fi
     else
         rand=$RANDOM
     fi
@@ -131,7 +136,7 @@ random_free_port_except_tag() {
     local min="$1"
     local max="$2"
     local tag="$3"
-    local span port rand attempt
+    local span port rand attempt random_hex
 
     validate_port "$min" || return 1
     validate_port "$max" || return 1
@@ -140,7 +145,12 @@ random_free_port_except_tag() {
 
     for ((attempt = 0; attempt < 200; attempt++)); do
         if command -v openssl >/dev/null 2>&1; then
-            rand=$((16#$(openssl rand -hex 2)))
+            random_hex="$(openssl rand -hex 2 2>/dev/null || true)"
+            if [[ "$random_hex" =~ ^[[:xdigit:]]{4}$ ]]; then
+                rand=$((16#$random_hex))
+            else
+                rand=$RANDOM
+            fi
         else
             rand=$RANDOM
         fi
@@ -477,7 +487,7 @@ build_advanced_share_link() {
 }
 
 state_set_advanced_profile() {
-    init_state
+    init_state || return 1
     local kind="$1"
     local state_key tmp link timestamp finalmask_json hash32
     local finalmask_mode finalmask_preset finalmask_summary flow
@@ -505,8 +515,8 @@ state_set_advanced_profile() {
         fi
     fi
 
-    tmp="$(mktemp)" || return 1
-    MSYS2_ENV_CONV_EXCL="*" ADVANCED_XHTTP_PATH="${ADVANCED_PATH:-}" ADVANCED_SPIDER_X="${ADVANCED_SPIDER_X:-/}" jq --arg state_key "$state_key" \
+    tmp="$(state_temp_file)" || return 1
+    if ! MSYS2_ENV_CONV_EXCL="*" ADVANCED_XHTTP_PATH="${ADVANCED_PATH:-}" ADVANCED_SPIDER_X="${ADVANCED_SPIDER_X:-/}" jq --arg state_key "$state_key" \
         --arg kind "$kind" \
         --arg tag "$(advanced_profile_tag "$kind")" \
         --arg port "$ADVANCED_PORT" \
@@ -572,9 +582,17 @@ state_set_advanced_profile() {
           .[$state_key].finalmask_json = $finalmask_json
         else . end |
         if $hash32 != "" then .[$state_key].hash32 = $hash32 else . end
-       ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
-    rm -f "$tmp"
-    ensure_config_security
+       ' "$STATE_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        err "[状态] 生成高级组合状态失败。"
+        return 1
+    fi
+    if ! mv "$tmp" "$STATE_FILE"; then
+        rm -f "$tmp"
+        err "[状态] 写入高级组合状态失败。"
+        return 1
+    fi
+    ensure_config_security || return 1
 }
 
 print_advanced_dry_run() {
@@ -647,13 +665,14 @@ install_advanced_profile() {
     fallback_limit_upload="${ADVANCED_FALLBACK_LIMIT_UPLOAD_JSON:-null}"
     fallback_limit_download="${ADVANCED_FALLBACK_LIMIT_DOWNLOAD_JSON:-null}"
 
-    tmp="$(mktemp)" || return 1
+    tmp="$(config_temp_file)" || return 1
     if ! MSYS2_ENV_CONV_EXCL="*" ADVANCED_XHTTP_PATH="${ADVANCED_PATH:-}" ADVANCED_SPIDER_X="${ADVANCED_SPIDER_X:-/}" jq --arg tag "$tag" \
         --arg port "$ADVANCED_PORT" \
         --arg uuid "$ADVANCED_UUID" \
         --arg network "$network" \
         --arg sni "$ADVANCED_SERVER_NAME" \
         --arg private_key "$REALITY_PRIVATE_KEY" \
+        --arg min_client_ver "$REALITY_MIN_CLIENT_VERSION" \
         --arg flow "$flow" \
         --argjson short_ids "$REALITY_SHORT_IDS_JSON" \
         --arg decryption "${VLESS_DECRYPTION:-}" \
@@ -686,6 +705,7 @@ install_advanced_profile() {
               "target": ($sni + ":443"),
               "show": false,
               "xver": 0,
+              "minClientVer": $min_client_ver,
               "spiderX": env.ADVANCED_SPIDER_X,
               "shortIds": $short_ids,
               "privateKey": $private_key,
@@ -740,7 +760,10 @@ install_advanced_profile() {
         print_apply_failure_hint "$kind"
         return 1
     fi
-    state_set_advanced_profile "$kind" || err "[状态] ${name} 状态写入失败，但 config.json 已生效。"
+    if ! state_set_advanced_profile "$kind"; then
+        rollback_config_after_state_failure "$name"
+        return 1
+    fi
     state_set_meta_action "安装 ${name}" || err "[状态] 最近变更记录失败。"
     ok "[完成] ${name} 已写入 Xray 配置。"
     print_advanced_profile_result "$kind"
@@ -850,7 +873,7 @@ remove_advanced_profile_config() {
 
     [[ -f "$CONFIG_FILE" ]] || {
         info "[高级组合] 未找到配置文件，视为未安装。"
-        state_delete_key "$state_key" 2>/dev/null || true
+        state_delete_key "$state_key" || return 1
         return 0
     }
     backup_config || {
@@ -858,7 +881,7 @@ remove_advanced_profile_config() {
         return 1
     }
 
-    tmp="$(mktemp)" || return 1
+    tmp="$(config_temp_file)" || return 1
     if ! jq --arg tag "$tag" '.inbounds = ((.inbounds // []) | map(select(.tag != $tag)))' "$CONFIG_FILE" >"$tmp"; then
         rm -f "$tmp"
         err "[高级组合] jq 删除配置失败。"
@@ -870,7 +893,10 @@ remove_advanced_profile_config() {
         return 1
     }
     apply_config "${name} 删除" || return 1
-    remove_state_key "$state_key"
+    if ! remove_state_key "$state_key"; then
+        rollback_config_after_state_failure "${name} 删除"
+        return 1
+    fi
     state_set_meta_action "删除 ${name}" || err "[状态] 最近变更记录失败。"
     ok "[完成] ${name} 已删除。"
 }

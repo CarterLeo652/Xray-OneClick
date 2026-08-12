@@ -27,7 +27,7 @@ render_export_report() {
     echo "Reality 摘要:"
     if inbound_exists "$REALITY_TAG"; then
         jq -r --arg tag "$REALITY_TAG" '.inbounds[]? | select(.tag == $tag) | "  port=\(.port) sni=\(.streamSettings.realitySettings.serverNames[0] // "") flow=\(.settings.clients[0].flow // "")"' "$CONFIG_FILE"
-        jq -r ".${REALITY_STATE_KEY} // {} | \"  publicKey=\(.public_key // \"\") shortId=\(.default_short_id // \"\") link=\(.link // \"\")\"" "$STATE_FILE" 2>/dev/null
+        jq -r ".${REALITY_STATE_KEY} // {} | \"  state=present client_credentials=***REDACTED***\"" "$STATE_FILE" 2>/dev/null
     else
         echo "  未安装"
     fi
@@ -35,7 +35,7 @@ render_export_report() {
     echo "XHTTP-FinalMask 摘要:"
     if inbound_exists "$VLESS_XHTTP_FM_TAG"; then
         jq -r --arg tag "$VLESS_XHTTP_FM_TAG" '.inbounds[]? | select(.tag == $tag) | "  port=\(.port) path=\(.streamSettings.xhttpSettings.path // "") finalmask=\(.streamSettings | has("finalmask"))"' "$CONFIG_FILE"
-        jq -r ".${VLESS_XHTTP_FM_STATE_KEY} // {} | \"  finalmask_enabled=\(.finalmask_enabled // false) mode=\(.finalmask_mode // \"off\") preset=\(.finalmask_preset // \"none\") summary=\(.finalmask_summary // \"\") link=\(.link // \"\")\"" "$STATE_FILE" 2>/dev/null
+        jq -r ".${VLESS_XHTTP_FM_STATE_KEY} // {} | \"  finalmask_enabled=\(.finalmask_enabled // false) mode=\(.finalmask_mode // \"off\") preset=\(.finalmask_preset // \"none\") summary=\(.finalmask_summary // \"\") client_credentials=***REDACTED***\"" "$STATE_FILE" 2>/dev/null
     else
         echo "  未安装"
     fi
@@ -43,7 +43,7 @@ render_export_report() {
     echo "ENC-FinalMask (sudoku) 摘要:"
     if inbound_exists "$VLESS_ENC_FM_TAG"; then
         jq -r --arg tag "$VLESS_ENC_FM_TAG" '.inbounds[]? | select(.tag == $tag) | "  port=\(.port) network=\(.streamSettings.network) finalmask=\(.streamSettings.finalmask.tcp[0].type // "")"' "$CONFIG_FILE"
-        jq -r ".${VLESS_ENC_FM_STATE_KEY} // {} | \"  auth=\(.auth // \"\") link=\(.link // \"\")\"" "$STATE_FILE" 2>/dev/null
+        jq -r ".${VLESS_ENC_FM_STATE_KEY} // {} | \"  auth_mode=\(.auth // \"\") client_credentials=***REDACTED***\"" "$STATE_FILE" 2>/dev/null
     else
         echo "  未安装"
     fi
@@ -51,7 +51,7 @@ render_export_report() {
     echo "ENC-XHTTP 摘要:"
     if inbound_exists "$VLESS_ENC_XHTTP_TAG"; then
         jq -r --arg tag "$VLESS_ENC_XHTTP_TAG" '.inbounds[]? | select(.tag == $tag) | "  port=\(.port) network=\(.streamSettings.network) path=\(.streamSettings.xhttpSettings.path // "")"' "$CONFIG_FILE"
-        jq -r ".${VLESS_ENC_XHTTP_STATE_KEY} // {} | \"  auth=\(.auth // \"\") link=\(.link // \"\")\"" "$STATE_FILE" 2>/dev/null
+        jq -r ".${VLESS_ENC_XHTTP_STATE_KEY} // {} | \"  auth_mode=\(.auth // \"\") client_credentials=***REDACTED***\"" "$STATE_FILE" 2>/dev/null
     else
         echo "  未安装"
     fi
@@ -59,7 +59,7 @@ render_export_report() {
     echo "Hysteria2 摘要:"
     if inbound_exists "$HY2_TAG"; then
         jq -r --arg tag "$HY2_TAG" '.inbounds[]? | select(.tag == $tag) | "  port=\(.port) protocol=\(.protocol) obfs=\(.streamSettings.finalmask.udp[0].type // "")"' "$CONFIG_FILE"
-        jq -r ".${HY2_STATE_KEY} // {} | \"  sni=\(.sni // \"\") link=\(.link // \"\")\"" "$STATE_FILE" 2>/dev/null
+        jq -r ".${HY2_STATE_KEY} // {} | \"  sni=\(.sni // \"\") client_credentials=***REDACTED***\"" "$STATE_FILE" 2>/dev/null
     else
         echo "  未安装"
     fi
@@ -104,9 +104,7 @@ render_export_clients() {
         echo "未找到 config.json"
         return 0
     fi
-    init_state
-    get_local_addresses
-    host_candidates "dual"
+    init_state || return 1
     view_config dual quick || true
     if [[ -f "$STATE_FILE" ]] && jq -e ".${VLESS_XHTTP_FM_STATE_KEY}.finalmask_enabled == true" "$STATE_FILE" >/dev/null 2>&1; then
         echo

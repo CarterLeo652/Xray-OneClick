@@ -9,7 +9,7 @@
 ### 模块化架构（P0–P6）
 
 - **薄入口** `install.sh`：模块下载、`main()` CLI 路由
-- **`03-installer`**：`ike` / `sb` 快捷命令与 `lib/` 自部署
+- **`03-installer`**：`ike` 快捷命令与 `lib/` 自部署
 - **`03-system`**：依赖安装、BBR、系统预检、端口与 UUID 工具
 - **协议 / Tunnel / 诊断 / CLI**：按职责拆分为独立 `lib/*.sh`，由 `00-bootstrap.sh` 按依赖顺序加载
 - 安装时同步复制 `lib/` 至 `/usr/local/share/ike/lib/`

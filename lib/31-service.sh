@@ -45,12 +45,13 @@ validate_service_file() {
 write_xray_service() {
     local service_file="${1:-$(service_file_path)}"
     local assume_yes="${2:-false}"
-    local backup_path
+    local backup_path tmp_service
 
-    mkdir -p "$(dirname "$service_file")" "$ASSET_DIR" "$(log_dir_path)"
+    mkdir -p "$(dirname "$service_file")" "$ASSET_DIR" "$(log_dir_path)" || return 1
     if [[ -f "$service_file" ]]; then
-        backup_path="${service_file}.bak.$(date +%Y%m%d%H%M%S)"
+        backup_path="$(mktemp "${service_file}.bak.$(date +%Y%m%d%H%M%S).XXXXXX")" || return 1
         cp -a "$service_file" "$backup_path" || {
+            rm -f "$backup_path"
             err "[服务] 备份旧 service 失败: $backup_path"
             return 1
         }
@@ -63,7 +64,8 @@ write_xray_service() {
         fi
     fi
 
-    cat >"$service_file" <<EOF
+    tmp_service="$(mktemp "${service_file}.tmp.XXXXXX")" || return 1
+    if ! cat >"$tmp_service" <<EOF
 # Managed by Xray-OneClick
 [Unit]
 Description=Xray Service
@@ -90,8 +92,21 @@ ReadWritePaths=$CONFIG_DIR $(log_dir_path)
 [Install]
 WantedBy=multi-user.target
 EOF
-    validate_service_file "$service_file" || {
+    then
+        rm -f "$tmp_service"
+        return 1
+    fi
+    validate_service_file "$tmp_service" || {
+        rm -f "$tmp_service"
         err "[服务] service 文件校验失败: $service_file"
+        return 1
+    }
+    chmod 644 "$tmp_service" || {
+        rm -f "$tmp_service"
+        return 1
+    }
+    mv "$tmp_service" "$service_file" || {
+        rm -f "$tmp_service"
         return 1
     }
 }
@@ -122,20 +137,23 @@ ensure_xray_service() {
         write_xray_service "$(service_file_path)" "$assume_yes" || return 1
         enable_xray_service || return 1
     elif [[ "$INIT_SYSTEM" == "openrc" ]]; then
-        local init_file
+        local init_file backup_path tmp_init
         init_file="$(openrc_init_path)"
-        mkdir -p "$(dirname "$init_file")" "$ASSET_DIR" "$(log_dir_path)"
-        if [[ -f "$init_file" ]] && ! grep -q "Managed by Xray-OneClick" "$init_file"; then
-            cp -a "$init_file" "${init_file}.bak.$(date +%Y%m%d%H%M%S)" || {
+        mkdir -p "$(dirname "$init_file")" "$ASSET_DIR" "$(log_dir_path)" || return 1
+        if [[ -f "$init_file" ]]; then
+            backup_path="$(mktemp "${init_file}.bak.$(date +%Y%m%d%H%M%S).XXXXXX")" || return 1
+            cp -a "$init_file" "$backup_path" || {
+                rm -f "$backup_path"
                 err "[服务] 备份旧 OpenRC 脚本失败: $init_file"
                 return 1
             }
-            if [[ "$assume_yes" != "true" ]] && ! env_truthy "${XRAY_ONECLICK_YES:-}"; then
+            if ! grep -q "Managed by Xray-OneClick" "$init_file" && [[ "$assume_yes" != "true" ]] && ! env_truthy "${XRAY_ONECLICK_YES:-}"; then
                 err "[服务] 非交互模式未确认覆盖 OpenRC 脚本；如需覆盖请添加 --yes 或设置 XRAY_ONECLICK_YES=1。"
                 return 1
             fi
         fi
-        cat >"$init_file" <<EOF
+        tmp_init="$(mktemp "${init_file}.tmp.XXXXXX")" || return 1
+        if ! cat >"$tmp_init" <<EOF
 #!/sbin/openrc-run
 # Managed by Xray-OneClick
 
@@ -160,8 +178,22 @@ start_pre() {
     checkpath -d -m 0755 "$(log_dir_path)"
 }
 EOF
-        chmod +x "$init_file"
-        rc-update add "$SERVICE_NAME" default >/dev/null 2>&1 || true
+        then
+            rm -f "$tmp_init"
+            return 1
+        fi
+        chmod 755 "$tmp_init" || {
+            rm -f "$tmp_init"
+            return 1
+        }
+        mv "$tmp_init" "$init_file" || {
+            rm -f "$tmp_init"
+            return 1
+        }
+        if ! rc-update add "$SERVICE_NAME" default >/dev/null 2>&1; then
+            err "[服务] OpenRC 服务启用失败: $SERVICE_NAME"
+            return 1
+        fi
     else
         err "[服务] 未检测到 systemd/openrc，已跳过服务文件写入。"
         return 1
@@ -170,6 +202,16 @@ EOF
 
 create_service() {
     ensure_xray_service "${XRAY_ONECLICK_YES:-false}"
+}
+
+xray_service_is_active() {
+    if [[ "$INIT_SYSTEM" == "systemd" ]] && command -v systemctl >/dev/null 2>&1; then
+        systemctl is-active --quiet "$SERVICE_NAME"
+    elif [[ "$INIT_SYSTEM" == "openrc" ]] && command -v rc-service >/dev/null 2>&1; then
+        rc-service "$SERVICE_NAME" status 2>/dev/null | grep -qiE 'started|running'
+    else
+        return 1
+    fi
 }
 
 restart_xray_service() {
@@ -233,9 +275,15 @@ xray_service_status() {
 
 stop_service() {
     if [[ "$INIT_SYSTEM" == "systemd" ]]; then
-        systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+        if xray_service_is_active && ! systemctl stop "$SERVICE_NAME" >/dev/null 2>&1; then
+            err "[服务] 停止 ${SERVICE_NAME}.service 失败。"
+            return 1
+        fi
     elif [[ "$INIT_SYSTEM" == "openrc" ]]; then
-        rc-service "$SERVICE_NAME" stop >/dev/null 2>&1 || true
+        if xray_service_is_active && ! rc-service "$SERVICE_NAME" stop >/dev/null 2>&1; then
+            err "[服务] 停止 OpenRC 服务 ${SERVICE_NAME} 失败。"
+            return 1
+        fi
     fi
 }
 

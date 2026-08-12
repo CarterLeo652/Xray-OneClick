@@ -413,7 +413,7 @@ build_reality_share_link() {
 }
 
 state_set_reality() {
-    init_state
+    init_state || return 1
     local tmp link timestamp clients_empty flow
     local hash32
 
@@ -424,8 +424,8 @@ state_set_reality() {
     timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     clients_empty="false"
     [[ "${REALITY_EMPTY_CLIENTS:-false}" == "true" ]] && clients_empty="true"
-    tmp="$(mktemp)" || return 1
-    MSYS2_ENV_CONV_EXCL="REALITY_JQ_SPIDER_X" REALITY_JQ_SPIDER_X="$REALITY_SPIDER_X" jq --argjson short_ids "$REALITY_SHORT_IDS_JSON" \
+    tmp="$(state_temp_file)" || return 1
+    if ! MSYS2_ENV_CONV_EXCL="REALITY_JQ_SPIDER_X" REALITY_JQ_SPIDER_X="$REALITY_SPIDER_X" jq --argjson short_ids "$REALITY_SHORT_IDS_JSON" \
         --arg port "$REALITY_PORT" \
         --arg defender_port "$REALITY_DEFENDER_PORT" \
         --arg uuid "$REALITY_UUID" \
@@ -456,9 +456,17 @@ state_set_reality() {
           "link": $link
         } |
         if $hash32 != "" then .vless_reality.hash32 = $hash32 else . end
-       ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
-    rm -f "$tmp"
-    ensure_config_security
+       ' "$STATE_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        err "[状态] 生成 Reality 状态失败。"
+        return 1
+    fi
+    if ! mv "$tmp" "$STATE_FILE"; then
+        rm -f "$tmp"
+        err "[状态] 写入 Reality 状态失败。"
+        return 1
+    fi
+    ensure_config_security || return 1
 }
 
 mask_value() {
@@ -566,7 +574,7 @@ install_reality() {
         clients_json="$(jq -cn --arg uuid "$REALITY_UUID" '[{"id": $uuid, "email": "reality@xray"}]')" || return 1
     fi
 
-    tmp="$(mktemp)" || return 1
+    tmp="$(config_temp_file)" || return 1
     if ! MSYS2_ENV_CONV_EXCL="REALITY_JQ_SPIDER_X" REALITY_JQ_SPIDER_X="$REALITY_SPIDER_X" jq --arg tag "$REALITY_TAG" \
         --arg defender_tag "$REALITY_DEFENDER_TAG" \
         --arg block "$BLOCK_OUTBOUND_TAG" \
@@ -574,6 +582,7 @@ install_reality() {
         --arg defender_port "$REALITY_DEFENDER_PORT" \
         --arg sni "$REALITY_SERVER_NAME" \
         --arg private_key "$REALITY_PRIVATE_KEY" \
+        --arg min_client_ver "$REALITY_MIN_CLIENT_VERSION" \
         --argjson short_ids "$REALITY_SHORT_IDS_JSON" \
         --argjson clients "$clients_json" '
         def has_defender_tag:
@@ -598,6 +607,7 @@ install_reality() {
                 "target": ("127.0.0.1:" + $defender_port),
                 "show": false,
                 "xver": 0,
+                "minClientVer": $min_client_ver,
                 "spiderX": env.REALITY_JQ_SPIDER_X,
                 "shortIds": $short_ids,
                 "privateKey": $private_key,
@@ -662,7 +672,10 @@ install_reality() {
         print_reality_failure_hint
         return 1
     fi
-    state_set_reality || err "[状态] Reality 状态写入失败，但 config.json 已生效。"
+    if ! state_set_reality; then
+        rollback_config_after_state_failure "Reality"
+        return 1
+    fi
     state_set_meta_action "安装 VLESS TCP REALITY" || err "[状态] 最近变更记录失败。"
     ok "[完成] VLESS TCP REALITY 已写入 Xray 配置。"
     print_reality_result
@@ -705,7 +718,7 @@ print_reality_result() {
         echo -e "提示: 当前 Reality 端口不是 443，最新 Xray 可能会提示非 443 warning。"
         echo -e "提示: 如果追求更自然的 TLS/REALITY 行为，可以手动指定 443，但要确保 443 未被其它服务占用。"
     fi
-    [[ -n "$link" ]] && echo -e "VLESS URL / v2rayN / sing-box 通用链接: ${link}"
+    [[ -n "$link" ]] && echo -e "VLESS URL / 通用客户端链接: ${link}"
     if [[ "${CURRENT_LINK_VIEW_MODE:-dual}" == "ipv6" ]] && ! should_print_ipv6_link "ipv6" "$REALITY_TAG" "$REALITY_STATE_KEY"; then
         print_ipv6_status_hint "$REALITY_TAG" "$REALITY_STATE_KEY"
     fi
@@ -734,7 +747,7 @@ remove_reality_config() {
 
     [[ -f "$CONFIG_FILE" ]] || {
         info "[Reality] 未找到配置文件，视为未安装。"
-        state_delete_key "$REALITY_STATE_KEY" 2>/dev/null || true
+        state_delete_key "$REALITY_STATE_KEY" || return 1
         return 0
     }
     backup_config || {
@@ -742,7 +755,7 @@ remove_reality_config() {
         return 1
     }
 
-    tmp="$(mktemp)" || return 1
+    tmp="$(config_temp_file)" || return 1
     if ! jq --arg tag "$REALITY_TAG" --arg defender_tag "$REALITY_DEFENDER_TAG" '
         def has_defender_tag:
           (((.inboundTag // []) | if type == "array" then any(.[]; . == $defender_tag) else . == $defender_tag end));
@@ -760,7 +773,10 @@ remove_reality_config() {
         return 1
     }
     apply_config "VLESS TCP REALITY 删除" || return 1
-    state_delete_key "$REALITY_STATE_KEY"
+    if ! state_delete_key "$REALITY_STATE_KEY"; then
+        rollback_config_after_state_failure "VLESS TCP REALITY 删除"
+        return 1
+    fi
     state_set_meta_action "删除 VLESS TCP REALITY" || err "[状态] 最近变更记录失败。"
     ok "[完成] VLESS TCP REALITY 已删除。"
 }

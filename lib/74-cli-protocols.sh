@@ -102,7 +102,7 @@ run_reality_command() {
             fi
             ;;
         show | "")
-            init_state
+            init_state || return 1
             print_reality_result "show"
             ;;
         remove | delete | del)
@@ -210,7 +210,7 @@ run_xhttp_command() {
             fi
             ;;
         show | "")
-            init_state
+            init_state || return 1
             print_vless_xhttp_finalmask_result "show"
             ;;
         remove | delete | del)
@@ -292,7 +292,7 @@ run_enc_finalmask_command() {
             fi
             ;;
         show | "")
-            init_state
+            init_state || return 1
             print_vless_enc_finalmask_result "show"
             ;;
         remove | delete | del)
@@ -378,7 +378,7 @@ run_enc_xhttp_command() {
             fi
             ;;
         show | "")
-            init_state
+            init_state || return 1
             print_vless_enc_xhttp_result "show"
             ;;
         remove | delete | del)
@@ -453,7 +453,7 @@ run_hysteria2_command() {
             fi
             ;;
         show | "")
-            init_state
+            init_state || return 1
             print_hysteria2_result "show"
             ;;
         remove | delete | del)
@@ -649,7 +649,7 @@ run_advanced_profile_command() {
             fi
             ;;
         show | "")
-            init_state
+            init_state || return 1
             print_advanced_profile_result "$kind" "show"
             ;;
         remove | delete | del)

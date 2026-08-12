@@ -156,7 +156,8 @@ redact_config_json() {
       def redact:
         walk(if type == "object" then
           with_entries(
-            if (.key | test("(?i)(privateKey|private_key|decryption|password|pass|token|secret)")) then
+            if ((.key | test("(?i)(privateKey|private_key|decryption|password|pass|token|secret)")) or
+                (.key | test("(?i)^(auth|id|uuid|shortIds|short_ids)$"))) then
               .value = "***REDACTED***"
             else
               .

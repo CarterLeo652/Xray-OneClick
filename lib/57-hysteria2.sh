@@ -5,7 +5,7 @@ hysteria2_cert_path() { printf '%s' "${CONFIG_DIR}/hysteria2-cert.pem"; }
 hysteria2_key_path() { printf '%s' "${CONFIG_DIR}/hysteria2-key.pem"; }
 
 generate_hysteria2_cert() {
-    local cert key
+    local cert key tmp_cert tmp_key old_key=""
     cert="$(hysteria2_cert_path)"
     key="$(hysteria2_key_path)"
 
@@ -14,16 +14,54 @@ generate_hysteria2_cert() {
         return 1
     }
     mkdir -p "$CONFIG_DIR" || return 1
-    if ! openssl ecparam -genkey -name prime256v1 -out "$key" 2>/dev/null; then
+    tmp_key="$(mktemp "${key}.tmp.XXXXXX")" || return 1
+    tmp_cert="$(mktemp "${cert}.tmp.XXXXXX")" || {
+        rm -f "$tmp_key"
+        return 1
+    }
+    if ! openssl ecparam -genkey -name prime256v1 -out "$tmp_key" 2>/dev/null; then
+        rm -f "$tmp_key" "$tmp_cert"
         err "[Hysteria2] 生成私钥失败。"
         return 1
     fi
-    if ! openssl req -new -x509 -days 3650 -key "$key" -out "$cert" -subj "/CN=${HY2_SNI:-bing.com}" 2>/dev/null; then
+    if ! openssl req -new -x509 -days 3650 -key "$tmp_key" -out "$tmp_cert" -subj "/CN=${HY2_SNI:-bing.com}" 2>/dev/null; then
+        rm -f "$tmp_key" "$tmp_cert"
         err "[Hysteria2] 生成自签证书失败。"
         return 1
     fi
-    chmod 600 "$key" 2>/dev/null || true
-    chmod 644 "$cert" 2>/dev/null || true
+    chmod 600 "$tmp_key" || {
+        rm -f "$tmp_key" "$tmp_cert"
+        return 1
+    }
+    chmod 644 "$tmp_cert" || {
+        rm -f "$tmp_key" "$tmp_cert"
+        return 1
+    }
+    if [[ -f "$key" ]]; then
+        old_key="$(mktemp "${key}.rollback.XXXXXX")" || {
+            rm -f "$tmp_key" "$tmp_cert"
+            return 1
+        }
+        cp -a "$key" "$old_key" || {
+            rm -f "$tmp_key" "$tmp_cert" "$old_key"
+            return 1
+        }
+    fi
+    mv "$tmp_key" "$key" || {
+        rm -f "$tmp_key" "$tmp_cert" "$old_key"
+        return 1
+    }
+    mv "$tmp_cert" "$cert" || {
+        rm -f "$tmp_cert"
+        if [[ -n "$old_key" ]]; then
+            cp -a "$old_key" "$key" || true
+        else
+            rm -f "$key"
+        fi
+        rm -f "$old_key"
+        return 1
+    }
+    rm -f "$old_key"
 }
 
 configure_hysteria2() {
@@ -65,6 +103,11 @@ configure_hysteria2() {
         HY2_SNI="${HY2_SNI_REQUEST:-${REALITY_SNI_CANDIDATES[0]}}"
     fi
 
+    if ! is_valid_endpoint_hostname "$HY2_SNI"; then
+        err "[Hysteria2] SNI 必须是有效的域名或 IPv4 地址。"
+        return 1
+    fi
+
     HY2_AUTH="$(openssl rand -hex 16 2>/dev/null)"
     [[ -n "$HY2_AUTH" ]] || HY2_AUTH="$(generate_uuid | tr -d '-')"
     HY2_OBFS="$(openssl rand -hex 16 2>/dev/null)"
@@ -100,12 +143,12 @@ build_hysteria2_share_link() {
 }
 
 state_set_hysteria2() {
-    init_state
+    init_state || return 1
     local tmp link timestamp
     link="$(build_hysteria2_share_link || true)"
     timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    tmp="$(mktemp)"
-    jq --arg key "$HY2_STATE_KEY" \
+    tmp="$(state_temp_file)" || return 1
+    if ! jq --arg key "$HY2_STATE_KEY" \
         --arg tag "$HY2_TAG" \
         --arg auth "$HY2_AUTH" \
         --arg sni "$HY2_SNI" \
@@ -124,9 +167,17 @@ state_set_hysteria2() {
           "listen_scope": $listen_scope,
           "updated_at": $updated
         }
-       ' "$STATE_FILE" >"$tmp" && mv "$tmp" "$STATE_FILE"
-    rm -f "$tmp"
-    ensure_config_security
+       ' "$STATE_FILE" >"$tmp"; then
+        rm -f "$tmp"
+        err "[状态] 生成 Hysteria2 状态失败。"
+        return 1
+    fi
+    if ! mv "$tmp" "$STATE_FILE"; then
+        rm -f "$tmp"
+        err "[状态] 写入 Hysteria2 状态失败。"
+        return 1
+    fi
+    ensure_config_security || return 1
 }
 
 install_hysteria2() {
@@ -147,7 +198,7 @@ install_hysteria2() {
         }
     fi
 
-    tmp="$(mktemp)" || return 1
+    tmp="$(config_temp_file)" || return 1
     if ! jq --arg tag "$HY2_TAG" \
         --arg listen "${HY2_LISTEN:-0.0.0.0}" \
         --arg port "$HY2_PORT" \
@@ -207,7 +258,10 @@ install_hysteria2() {
         err "[Hysteria2] 配置未通过 Xray 校验；请确认 Xray-core 版本支持 Hysteria2(v26+)。"
         return 1
     fi
-    state_set_hysteria2 || err "[状态] Hysteria2 状态写入失败，但 config.json 已生效。"
+    if ! state_set_hysteria2; then
+        rollback_config_after_state_failure "Hysteria2"
+        return 1
+    fi
     state_set_meta_action "安装 Hysteria2" || err "[状态] 最近变更记录失败。"
     ok "[完成] Hysteria2 已写入 Xray 配置。"
     print_hysteria2_result
@@ -243,6 +297,9 @@ print_hysteria2_result() {
 }
 
 remove_hysteria2_config() {
-    remove_simple_inbound_config "$HY2_TAG" "$HY2_STATE_KEY" "Hysteria2"
-    rm -f "$(hysteria2_cert_path)" "$(hysteria2_key_path)" 2>/dev/null || true
+    remove_simple_inbound_config "$HY2_TAG" "$HY2_STATE_KEY" "Hysteria2" || return 1
+    if ! rm -f "$(hysteria2_cert_path)" "$(hysteria2_key_path)"; then
+        err "[Hysteria2] 配置已删除，但清理证书文件失败。"
+        return 1
+    fi
 }

@@ -33,12 +33,8 @@ run_view_command() {
     done
 
     if [[ -n "$protocol" ]]; then
-        init_state
-        if [[ "$detail" == "doctor" ]]; then
-            get_public_addresses
-        else
-            get_local_addresses
-        fi
+        init_state || return 1
+        get_public_addresses
         host_candidates "$mode"
         CURRENT_LINK_VIEW_MODE="$mode"
         case "$protocol" in

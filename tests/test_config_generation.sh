@@ -70,10 +70,33 @@ if [[ -z "$XRAY_TEST_BIN" ]]; then
     XRAY_TEST_BIN="$(command -v xray 2>/dev/null || true)"
 fi
 
+prepare_xray_test_certificates() {
+    local config="$1"
+    local cert_file key_file
+
+    while IFS=$'\t' read -r cert_file key_file; do
+        [[ -n "$cert_file" && -n "$key_file" ]] || continue
+        [[ -s "$cert_file" && -s "$key_file" ]] && continue
+        command -v openssl >/dev/null 2>&1 || return 1
+        mkdir -p "$(dirname "$cert_file")" "$(dirname "$key_file")"
+        openssl req -x509 -nodes -newkey rsa:2048 \
+            -subj '/CN=localhost' -days 1 \
+            -keyout "$key_file" -out "$cert_file" >/dev/null 2>&1 || return 1
+    done < <(jq -r '
+      .. | objects |
+      select((.certificateFile? | type) == "string" and (.keyFile? | type) == "string") |
+      [.certificateFile, .keyFile] | @tsv
+    ' "$config")
+}
+
 run_xray_config_test_if_available() {
     local config="$1"
 
     if [[ -n "$XRAY_TEST_BIN" && -x "$XRAY_TEST_BIN" ]]; then
+        if ! prepare_xray_test_certificates "$config"; then
+            echo "[SKIP] 缺少 openssl，无法准备测试证书: $config"
+            return 0
+        fi
         "$XRAY_TEST_BIN" run -test -config "$config" >/dev/null ||
             fail "xray run -test 未通过: $config"
         echo "[OK] xray run -test: $config"
@@ -112,6 +135,9 @@ assert_reality_target() {
     jq -e --arg tag "$tag" '
       any(.inbounds[]?; .tag == $tag and ((.streamSettings.realitySettings.target // "") | length > 0))
     ' "$config" >/dev/null || fail "缺少 realitySettings.target: tag=$tag config=$config"
+    jq -e --arg tag "$tag" '
+      any(.inbounds[]?; .tag == $tag and .streamSettings.realitySettings.minClientVer == "0.0.0")
+    ' "$config" >/dev/null || fail "realitySettings.minClientVer 未设置为 0.0.0: tag=$tag config=$config"
 }
 
 assert_reality_defender() {
